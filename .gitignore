@@ -1,0 +1,11 @@
+# Ignore the following folders:
+__pycache__/
+data/
+etc/
+Include/
+Lib/
+Scripts/
+share/
+
+# Ignore pyvenv.cfg
+pyvenv.cfg
