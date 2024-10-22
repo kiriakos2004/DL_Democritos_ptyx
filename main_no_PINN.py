@@ -185,7 +185,7 @@ if __name__ == "__main__":
     # Load data using the DataProcessor class
     data_processor = DataProcessor(
         file_path='data/Hera/P data_20220607-20230127_Democritos.csv',
-        target_column='Speed-Through-Water',
+        target_column='Power',
         drop_columns=['TIME']
     )
     X_train, X_test, y_train, y_test = data_processor.load_and_prepare_data()
