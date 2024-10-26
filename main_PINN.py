@@ -5,18 +5,19 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import KFold
 import numpy as np
+import pandas as pd  # Ensure pandas is imported
 from itertools import product
 from tqdm import tqdm
 from read_data import DataProcessor
 
 class ShipSpeedPredictorModel:
     def __init__(self, input_size, lr=0.001, epochs=100, batch_size=32, optimizer_choice='Adam', loss_function_choice='MSE'):
-        self.lr = lr # Part of hyperparameter search
+        self.lr = lr  # Part of hyperparameter search
         self.epochs = epochs  # Manually specified
-        self.batch_size = batch_size # Part of hyperparameter search
+        self.batch_size = batch_size  # Part of hyperparameter search
         self.optimizer_choice = optimizer_choice  # Manually specified
         self.loss_function_choice = loss_function_choice  # Manually specified
-        self.device = self.get_device()    
+        self.device = self.get_device()
 
         # Initialize the model
         self.model = self.ShipSpeedPredictor(input_size).to(self.device)
@@ -64,7 +65,7 @@ class ShipSpeedPredictorModel:
 
     def prepare_dataloader(self, X_train, y_train):
         """Function to prepare the DataLoader from training data and move tensors to the device."""
-        X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(self.device)
+        X_train_tensor = torch.tensor(X_train.values, dtype=torch.float32).to(self.device)
         y_train_tensor = torch.tensor(y_train.values, dtype=torch.float32).view(-1, 1).to(self.device)
 
         # Create DataLoader for batching using maximum CPU cores for parallel data loading
@@ -75,12 +76,12 @@ class ShipSpeedPredictorModel:
 
     def prepare_unscaled_dataloader(self, X_train_unscaled):
         """Function to prepare the DataLoader for unscaled data."""
-        X_train_unscaled_tensor = torch.tensor(X_train_unscaled, dtype=torch.float32).to(self.device)
+        X_train_unscaled_tensor = torch.tensor(X_train_unscaled.values, dtype=torch.float32).to(self.device)
         unscaled_dataset = TensorDataset(X_train_unscaled_tensor)
         unscaled_loader = DataLoader(unscaled_dataset, batch_size=self.batch_size, shuffle=True, num_workers=os.cpu_count())
 
         return unscaled_loader
-    
+
     def calculate_physics_loss(self, V, trim, predicted_power, rho, S, S_APP, A_t, F_nt, C_f, C_a, k, STWAVE1, alpha, eta_D):
         """Use unscaled values for physics calculations"""
         # Frictional Resistance (R_F)
@@ -165,11 +166,10 @@ class ShipSpeedPredictorModel:
 
             print(f"Epoch [{epoch+1}/{self.epochs}], Loss: {running_loss/len(train_loader):.4f}")
 
-
     def evaluate(self, X_eval, y_eval, dataset_type="Validation"):
         """Function to evaluate the model on the given dataset (validation or test)."""
         self.model.eval()  # Set the model to evaluation mode
-        X_eval_tensor = torch.tensor(X_eval, dtype=torch.float32).to(self.device)
+        X_eval_tensor = torch.tensor(X_eval.values, dtype=torch.float32).to(self.device)
         y_eval_tensor = torch.tensor(y_eval.values, dtype=torch.float32).view(-1, 1).to(self.device)
 
         loss_function = self.get_loss_function()
@@ -179,26 +179,36 @@ class ShipSpeedPredictorModel:
             print(f"\n{dataset_type} Loss: {loss.item():.4f}")
         return loss.item()
 
-    def cross_validate(self, X, y, k_folds=5):
+    def cross_validate(self, X, X_unscaled, y, k_folds=5):
         """Function to perform cross-validation on the model using training and validation data."""
         kfold = KFold(n_splits=k_folds, shuffle=True)
         fold_results = []
+
+        # Convert to pandas DataFrames if they're not already
+        if isinstance(X, np.ndarray):
+            X = pd.DataFrame(X)
+        if isinstance(X_unscaled, np.ndarray):
+            X_unscaled = pd.DataFrame(X_unscaled)
+        if isinstance(y, np.ndarray):
+            y = pd.Series(y)
 
         for fold, (train_idx, val_idx) in enumerate(kfold.split(X)):
             print(f"\nFold {fold+1}/{k_folds}")
 
             # Split the data into training and validation sets
-            X_train, X_val = X[train_idx], X[val_idx]
+            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+            X_train_unscaled, X_val_unscaled = X_unscaled.iloc[train_idx], X_unscaled.iloc[val_idx]
             y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
 
             # Prepare the data loaders
             train_loader = self.prepare_dataloader(X_train, y_train)
+            unscaled_data_loader = self.prepare_unscaled_dataloader(X_train_unscaled)
 
             # Reset model weights for each fold
             self.model.apply(self.reset_weights)
 
             # Train the model on the training split
-            self.train(train_loader)
+            self.train(train_loader, unscaled_data_loader)
 
             # Evaluate the model on the validation split
             val_loss = self.evaluate(X_val, y_val, dataset_type="Validation")
@@ -216,7 +226,7 @@ class ShipSpeedPredictorModel:
             m.reset_parameters()
 
     @staticmethod
-    def hyperparameter_search(X_train, y_train, param_grid, epochs, optimizer, loss_function, k_folds=5):
+    def hyperparameter_search(X_train, X_train_unscaled, y_train, param_grid, epochs, optimizer, loss_function, k_folds=5):
         """Function to perform hyperparameter search with cross-validation."""
         best_params = None
         best_loss = float('inf')
@@ -228,7 +238,7 @@ class ShipSpeedPredictorModel:
             # Initialize model with the current learning rate and batch size
             model = ShipSpeedPredictorModel(
                 input_size=X_train.shape[1],
-                lr=lr, # Part of hyperparameter search
+                lr=lr,  # Part of hyperparameter search
                 epochs=epochs,  # Manually specified
                 optimizer_choice=optimizer,  # Manually specified
                 loss_function_choice=loss_function,  # Manually specified
@@ -236,7 +246,7 @@ class ShipSpeedPredictorModel:
             )
 
             # Perform cross-validation
-            avg_val_loss = model.cross_validate(X_train, y_train, k_folds=k_folds)
+            avg_val_loss = model.cross_validate(X_train, X_train_unscaled, y_train, k_folds=k_folds)
 
             # Update the best combination if this one is better
             if avg_val_loss < best_loss:
@@ -246,8 +256,6 @@ class ShipSpeedPredictorModel:
         print(f"\nBest parameters: {best_params}, with average validation loss: {best_loss:.4f}")
         return best_params, best_loss
 
-
-
 if __name__ == "__main__":
     # Load data using the DataProcessor class
     data_processor = DataProcessor(
@@ -255,7 +263,7 @@ if __name__ == "__main__":
         target_column='Power',
         drop_columns=['TIME']
     )
-    X_train, X_test, y_train, y_test = data_processor.load_and_prepare_data()
+    X_train, X_test, X_train_unscaled, X_test_unscaled, y_train, y_test = data_processor.load_and_prepare_data()
 
     # Define hyperparameter grid (search for learning rate and batch size)
     param_grid = {
@@ -270,7 +278,7 @@ if __name__ == "__main__":
 
     # Perform hyperparameter search with cross-validation
     best_params, best_loss = ShipSpeedPredictorModel.hyperparameter_search(
-        X_train, y_train, param_grid, epochs, optimizer, loss_function, k_folds=5
+        X_train, X_train_unscaled, y_train, param_grid, epochs, optimizer, loss_function, k_folds=5
     )
 
     # Train the final model with the best hyperparameters
@@ -283,9 +291,12 @@ if __name__ == "__main__":
         batch_size=best_params['batch_size']  # Best batch size
     )
 
-    # Train the final model on the entire training set
+    # Prepare the data loaders for the final model
     final_train_loader = final_model.prepare_dataloader(X_train, y_train)
-    final_model.train(final_train_loader)
+    final_unscaled_loader = final_model.prepare_unscaled_dataloader(X_train_unscaled)
+
+    # Train the final model on the entire training set
+    final_model.train(final_train_loader, final_unscaled_loader)
 
     # Evaluate the final model on the test set (after hyperparameter tuning)
     final_model.evaluate(X_test, y_test, dataset_type="Test")
