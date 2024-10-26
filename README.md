@@ -24,16 +24,16 @@ The code has been created with the use of python version 3.12.2. In order to rec
 
 ## Installation
 
-1.Clone the repository:
+1. Clone the repository:
 
         git clone https://github.com/kiriakos2004/DL_Democritos_ptyx.git
 
-2.Set up a virtual environment (optional but recommended):
+2. Set up a virtual environment (optional but recommended):
 
         python -m venv <name you want>
         source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
 
-3.Install dependencies using:
+3. Install dependencies using:
 
         pip install -r requirements.txt
 
@@ -73,4 +73,58 @@ This script will:
 - Train the final model with the best hyperparameters.
 - Evaluate the model on the test set.
 
+### Running the Physics-Informed Neural Network (PINN)
 
+To train and evaluate the PINN:
+
+        python main_pinn.py
+
+This script:
+
+- Loads and preprocesses the data.
+- Incorporates physical laws related to ship resistance into the loss function.
+- Performs hyperparameter tuning similar to the data-driven model.
+- Trains the final PINN model with the best hyperparameters.
+- Evaluates the PINN on the test set.
+
+## Physics-Based Loss Function
+
+The PINN incorporates a physics-based loss term calculated using ship resistance equations:
+
+- Frictional Resistance
+- Wave-Making Resistance
+- Appendage Resistance
+- Transom Stern Resistance
+- Correlation Allowance Resistance
+
+The physics-based loss is computed as the squared difference between the predicted power and the power calculated using the total resistance and propulsive efficiency:
+
+![Screenshot_2](https://github.com/user-attachments/assets/88e88f14-73b3-4232-92ed-693ce98a8c87)
+
+## Hyperparameter Tuning
+
+Both models perform hyperparameter tuning over:
+
+- Learning Rate: [0.001, 0.01]
+- Batch Size: [32, 64]
+
+Using k-fold cross-validation (default is 5 folds).
+
+## Results
+
+- Training Loss: Displayed during each epoch for both models.
+- Validation Loss: Reported during hyperparameter tuning for each parameter combination.
+- Test Loss: Final evaluation metric on the test set.
+
+Compare the test losses of both models to assess the impact of incorporating physics into the model.
+
+## Acknowledgments
+
+- Special thanks to my profeccor Christoforos Rekatsinas (Ph.D.) for his guidance and support.
+
+## Contact
+
+For any questions or inquiries, please contact:
+
+    Alexiou Kiriakos
+    Email: kiriakosal2004@yahoo.gr
