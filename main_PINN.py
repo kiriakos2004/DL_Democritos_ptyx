@@ -134,8 +134,16 @@ class ShipSpeedPredictorModel:
             self.model.train()
             running_loss = 0.0
 
+            # Determine the total number of batches
+            total_batches = len(train_loader)  # Assuming both loaders have the same length
+
             # Progress bar for each epoch, updating on each batch
-            progress_bar = tqdm(zip(train_loader, unscaled_data_loader), desc=f"Epoch {epoch+1}/{self.epochs}", leave=True)
+            progress_bar = tqdm(
+                zip(train_loader, unscaled_data_loader),
+                desc=f"Epoch {epoch+1}/{self.epochs}",
+                leave=True,
+                total=total_batches
+            )
 
             for (X_batch, y_batch), (X_unscaled_batch,) in progress_bar:
                 optimizer.zero_grad()  # Zero out the gradients
@@ -162,9 +170,9 @@ class ShipSpeedPredictorModel:
                 running_loss += total_loss.item()
 
                 # Update progress bar with current loss
-                progress_bar.set_postfix({"Batch Loss": f"{running_loss/len(train_loader):.4f}"})
+                progress_bar.set_postfix({"Batch Loss": f"{running_loss/total_batches:.4f}"})
 
-            print(f"Epoch [{epoch+1}/{self.epochs}], Loss: {running_loss/len(train_loader):.4f}")
+            print(f"Epoch [{epoch+1}/{self.epochs}], Loss: {running_loss/total_batches:.4f}")
 
     def evaluate(self, X_eval, y_eval, dataset_type="Validation"):
         """Function to evaluate the model on the given dataset (validation or test)."""
