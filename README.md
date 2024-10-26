@@ -1,5 +1,4 @@
-# DL_Democritos_ptyx
-Predicting Ship Propulsion Power using Physics-Informed Neural Networks (PINNs)
+# Predicting Ship Propulsion Power using Physics-Informed Neural Networks (PINNs)
 
 This project belongs to master's thesis of the Inter-Institutional MSc entitled "Artificial Intelligence" that is organized by The Department of Digital Systems, School of Informatics and Communication Technologies, of University of Piraeus, and the Institute of Informatics and Telecommunications of NCSR "Demokritos". url: "https://msc-ai.iit.demokritos.gr/en".
 
