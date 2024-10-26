@@ -126,5 +126,5 @@ Compare the test losses of both models to assess the impact of incorporating phy
 
 For any questions or inquiries, please contact:
 
-    Alexiou Kiriakos
-    Email: kiriakosal2004@yahoo.gr
+- Alexiou Kiriakos
+- Email: kiriakosal2004@yahoo.gr
