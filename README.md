@@ -10,7 +10,7 @@ This project belongs to master's thesis of the Inter-Institutional MSc entitled 
 - main_no_pinn.py: Implements a purely data-driven neural network model for predicting ship propulsion power. Includes hyperparameter tuning and model evaluation.
 - main_pinn.py: Implements a Physics-Informed Neural Network (PINN) that incorporates physical laws related to ship resistance into the training process.
 
-Features
+## Features
 
 - Data Preprocessing: Handles missing values and scales features using StandardScaler.
 - Data-Driven Model: A multi-layer neural network trained solely on data to predict propulsion power.
