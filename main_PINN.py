@@ -72,12 +72,17 @@ class ShipSpeedPredictorModel:
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=os.cpu_count())  # Use all cores
 
         return train_loader
-    
-    def calculate_physics_loss(self, X_batch, predicted_power, rho, S, S_APP, A_t, F_nt, C_f, C_a, k, STWAVE1, alpha, eta_D):
-        # Extract speed and trim from the input features
-        V = X_batch[:, 0]  # Assuming speed is the first feature
-        trim = X_batch[:, 1] - X_batch[:, 2]  # Assuming fore and aft drafts are the next features
 
+    def prepare_unscaled_dataloader(self, X_train_unscaled):
+        """Function to prepare the DataLoader for unscaled data."""
+        X_train_unscaled_tensor = torch.tensor(X_train_unscaled, dtype=torch.float32).to(self.device)
+        unscaled_dataset = TensorDataset(X_train_unscaled_tensor)
+        unscaled_loader = DataLoader(unscaled_dataset, batch_size=self.batch_size, shuffle=True, num_workers=os.cpu_count())
+
+        return unscaled_loader
+    
+    def calculate_physics_loss(self, V, trim, predicted_power, rho, S, S_APP, A_t, F_nt, C_f, C_a, k, STWAVE1, alpha, eta_D):
+        """Use unscaled values for physics calculations"""
         # Frictional Resistance (R_F)
         R_F = 0.5 * rho * V**2 * S * C_f
 
@@ -104,9 +109,9 @@ class ShipSpeedPredictorModel:
         # Calculate physics-based loss as the squared difference
         physics_loss = (predicted_power - P_S) ** 2
 
-        return physics_loss   
+        return physics_loss
 
-    def train(self, train_loader, alpha=1.0, beta=0.1):
+    def train(self, train_loader, unscaled_data_loader, alpha=1.0, beta=0.1):
         """Function to train the model, now including the physics-based loss."""
         optimizer = self.get_optimizer()
         loss_function = self.get_loss_function()
@@ -129,18 +134,22 @@ class ShipSpeedPredictorModel:
             running_loss = 0.0
 
             # Progress bar for each epoch, updating on each batch
-            progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{self.epochs}", leave=True)
+            progress_bar = tqdm(zip(train_loader, unscaled_data_loader), desc=f"Epoch {epoch+1}/{self.epochs}", leave=True)
 
-            for X_batch, y_batch in progress_bar:
+            for (X_batch, y_batch), (X_unscaled_batch,) in progress_bar:
                 optimizer.zero_grad()  # Zero out the gradients
                 outputs = self.model(X_batch)  # Forward pass
 
-                # Data-driven loss (MSE or other)
+                # Data-driven loss
                 data_loss = loss_function(outputs, y_batch)
+
+                # Extract speed and trim from unscaled features for physics-based loss
+                V = X_unscaled_batch[:, 0]  # Assuming speed is the first feature
+                trim = X_unscaled_batch[:, 1] - X_unscaled_batch[:, 2]  # Assuming fore and aft drafts are the next features
 
                 # Physics-based loss
                 physics_loss = self.calculate_physics_loss(
-                    X_batch, outputs, rho, S, S_APP, A_t, F_nt, C_f, C_a, k, STWAVE1, alpha_trim, eta_D
+                    V, trim, outputs, rho, S, S_APP, A_t, F_nt, C_f, C_a, k, STWAVE1, alpha_trim, eta_D
                 )
 
                 # Combine the losses

@@ -188,7 +188,7 @@ if __name__ == "__main__":
         target_column='Power',
         drop_columns=['TIME']
     )
-    X_train, X_test, y_train, y_test = data_processor.load_and_prepare_data()
+    X_train, X_test, X_train_unscaled, X_test_unscaled, y_train, y_test = data_processor.load_and_prepare_data()
 
     # Define hyperparameter grid (search for learning rate and batch size)
     param_grid = {

@@ -6,6 +6,7 @@ Include/
 Lib/
 Scripts/
 share/
+old_code/
 
 # Ignore pyvenv.cfg
 pyvenv.cfg
