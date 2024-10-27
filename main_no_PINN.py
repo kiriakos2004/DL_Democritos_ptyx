@@ -8,15 +8,16 @@ import numpy as np
 from itertools import product
 from tqdm import tqdm
 from read_data import DataProcessor
+import pandas as pd  # Import pandas if not already imported
 
 class ShipSpeedPredictorModel:
     def __init__(self, input_size, lr=0.001, epochs=100, batch_size=32, optimizer_choice='Adam', loss_function_choice='MSE'):
-        self.lr = lr # Part of hyperparameter search
+        self.lr = lr  # Part of hyperparameter search
         self.epochs = epochs  # Manually specified
-        self.batch_size = batch_size # Part of hyperparameter search
+        self.batch_size = batch_size  # Part of hyperparameter search
         self.optimizer_choice = optimizer_choice  # Manually specified
         self.loss_function_choice = loss_function_choice  # Manually specified
-        self.device = self.get_device()    
+        self.device = self.get_device()
 
         # Initialize the model
         self.model = self.ShipSpeedPredictor(input_size).to(self.device)
@@ -64,12 +65,15 @@ class ShipSpeedPredictorModel:
 
     def prepare_dataloader(self, X_train, y_train):
         """Function to prepare the DataLoader from training data and move tensors to the device."""
+        # Convert X_train to NumPy array if it's a DataFrame
+        if isinstance(X_train, pd.DataFrame):
+            X_train = X_train.values
         X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(self.device)
         y_train_tensor = torch.tensor(y_train.values, dtype=torch.float32).view(-1, 1).to(self.device)
 
         # Create DataLoader for batching using maximum CPU cores for parallel data loading
         train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=os.cpu_count())  # Use all cores
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=0)  # Set num_workers=0 for Windows
 
         return train_loader
 
@@ -98,10 +102,13 @@ class ShipSpeedPredictorModel:
 
             print(f"Epoch [{epoch+1}/{self.epochs}], Loss: {running_loss/len(train_loader):.4f}")
 
-
     def evaluate(self, X_eval, y_eval, dataset_type="Validation"):
         """Function to evaluate the model on the given dataset (validation or test)."""
         self.model.eval()  # Set the model to evaluation mode
+
+        # Convert X_eval to NumPy array if it's a DataFrame
+        if isinstance(X_eval, pd.DataFrame):
+            X_eval = X_eval.values
         X_eval_tensor = torch.tensor(X_eval, dtype=torch.float32).to(self.device)
         y_eval_tensor = torch.tensor(y_eval.values, dtype=torch.float32).view(-1, 1).to(self.device)
 
@@ -120,8 +127,8 @@ class ShipSpeedPredictorModel:
         for fold, (train_idx, val_idx) in enumerate(kfold.split(X)):
             print(f"\nFold {fold+1}/{k_folds}")
 
-            # Split the data into training and validation sets
-            X_train, X_val = X[train_idx], X[val_idx]
+            # Split the data into training and validation sets using .iloc
+            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
             y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
 
             # Prepare the data loaders
@@ -161,7 +168,7 @@ class ShipSpeedPredictorModel:
             # Initialize model with the current learning rate and batch size
             model = ShipSpeedPredictorModel(
                 input_size=X_train.shape[1],
-                lr=lr, # Part of hyperparameter search
+                lr=lr,  # Part of hyperparameter search
                 epochs=epochs,  # Manually specified
                 optimizer_choice=optimizer,  # Manually specified
                 loss_function_choice=loss_function,  # Manually specified
@@ -179,12 +186,10 @@ class ShipSpeedPredictorModel:
         print(f"\nBest parameters: {best_params}, with average validation loss: {best_loss:.4f}")
         return best_params, best_loss
 
-
-
 if __name__ == "__main__":
     # Load data using the DataProcessor class
     data_processor = DataProcessor(
-        file_path='data/Hera/P data_20220607-20230127_Democritos.csv',
+        file_path='data/Pig/P data_20230201-20230801_Democritos.csv',
         target_column='Power',
         drop_columns=['TIME']
     )
