@@ -2,15 +2,15 @@
 
 import numpy as np
 
-def calculate_shaft_power(V, trim, rho, S, S_APP, A_t,
-                          F_nt, C_f, C_a, k,
-                          STWAVE1, alpha_trim, eta_D):
+def calculate_shaft_power(V_knots, fore_draft, aft_draft, rho, S, S_APP, A_t,
+                          F_nt, C_f, C_a, k,STWAVE1, alpha_trim, eta_D):
     """
-    Calculate the shaft power (P_S) based on vessel speed, trim, and physical constants.
+    Calculate the shaft power (P_S) based on vessel speed, fore draft, aft draft, and physical constants.
 
     Parameters:
     - V (float or ndarray): Speed of the vessel (in m/s).
-    - trim (float or ndarray): Trim of the vessel (in meters).
+    - fore_draft (float or ndarray): Fore draft of the vessel (in meters).
+    - aft_draft (float or ndarray): Aft draft of the vessel (in meters).
     - rho (float): Water density (kg/m³). Default is 1025.0.
     - S (float): Wetted surface area of the hull (m²). Default is 9950.0.
     - S_APP (float): Wetted surface area of appendages (m²). Default is 150.0.
@@ -24,8 +24,13 @@ def calculate_shaft_power(V, trim, rho, S, S_APP, A_t,
     - eta_D (float): Propulsive efficiency (dimensionless). Default is 0.65.
 
     Returns:
-    - P_S (float or ndarray): Calculated shaft power (in Watts).
+    - P_S (float or ndarray): Calculated shaft power (in KWatts).
     """
+    # Convert speed from knots to meters per second
+    V = V_knots * 0.51444  # 1 knot = 0.51444 m/s
+
+    # Calculate trim as the difference between fore draft and aft draft
+    trim = fore_draft - aft_draft
 
     # Frictional Resistance (R_F)
     R_F = 0.5 * rho * V**2 * S * C_f
@@ -48,7 +53,7 @@ def calculate_shaft_power(V, trim, rho, S, S_APP, A_t,
     R_T = R_F * (1 + k) + R_W + R_APP + R_TR + R_C
 
     # Calculate shaft power (P_S)
-    P_S = (V * R_T) / eta_D
+    P_S = ((V * R_T) / eta_D)/1000
 
     return P_S
 
@@ -56,12 +61,13 @@ if __name__ == "__main__":
     import numpy as np
 
     # Example inputs
-    V = np.array([5.0, 10.0, 15.0])     # Speeds in m/s
-    trim = np.array([0.2, 0.5, 0.7])    # Trims in meters
+    V = np.array([11.0, 11.0])           # Speeds in m/s
+    fore_draft = np.array([14.3, 14.5]) # Fore drafts in meters
+    aft_draft = np.array([15.0, 15.1])  # Aft drafts in meters
 
     # Ship-specific constants
     rho = 1025.0      # kg/m³
-    S = 9950.0        # m²
+    S = 9995.0        # m²
     S_APP = 200.0     # m²
     A_t = 60.0        # m²
     F_nt = 0.28       # Dimensionless
@@ -74,9 +80,9 @@ if __name__ == "__main__":
 
     # Calculate shaft power with custom parameters
     P_S = calculate_shaft_power(
-        V, trim, rho, S, S_APP, A_t, F_nt, C_f, C_a, k,
+        V, fore_draft, aft_draft, rho, S, S_APP, A_t, F_nt, C_f, C_a, k,
         STWAVE1, alpha_trim, eta_D
     )
 
-    for speed, tr, power in zip(V, trim, P_S):
-        print(f"At speed {speed} m/s and trim {tr} m, the shaft power is {power:.2f} Watts")
+    for speed, fore_d, aft_d, power in zip(V, fore_draft, aft_draft, P_S):
+        print(f"At speed {speed} m/s, fore draft {fore_d} m, aft draft {aft_d} m, the shaft power is {power:.2f} KWatts")
