@@ -114,7 +114,7 @@ class ShipSpeedPredictorModel:
         R_T = R_F * (1 + k) + R_W + R_APP + R_TR + R_C
 
         # Calculate shaft power (P_S)
-        P_S = (V * R_T) / eta_D
+        P_S = ((V * R_T) / eta_D)/1000
 
         # Calculate physics-based loss as the squared difference
         physics_loss = (predicted_power.squeeze() - P_S) ** 2
@@ -137,7 +137,7 @@ class ShipSpeedPredictorModel:
         k = 0.15  # Form factor (dimensionless)
         STWAVE1 = 0.001  # Base wave resistance coefficient
         alpha_trim = 0.1  # Coefficient representing the effect of trim on wave resistance
-        eta_D = 0.9  # Propulsive efficiency (example value)
+        eta_D = 0.84  # Propulsive efficiency (example value)
 
         for epoch in range(self.epochs):
             self.model.train()
@@ -334,7 +334,7 @@ if __name__ == "__main__":
     optimizer = 'Adam'
     loss_function = 'MSE'
     alpha = 1.0   # Manually specified
-    beta = 0.01    # Manually specified
+    beta = 0.1    # Manually specified
 
     # Perform hyperparameter search with cross-validation
     best_params, best_loss = ShipSpeedPredictorModel.hyperparameter_search(

@@ -76,7 +76,7 @@ if __name__ == "__main__":
     k = 0.2           # Dimensionless
     STWAVE1 = 0.0008  # Dimensionless
     alpha_trim = 0.12 # Dimensionless
-    eta_D = 0.9       # Dimensionless
+    eta_D = 0.84       # Dimensionless
 
     # Calculate shaft power with custom parameters
     P_S = calculate_shaft_power(
