@@ -61,7 +61,7 @@ if __name__ == "__main__":
     import numpy as np
 
     # Example inputs
-    V = np.array([11.0, 11.0])           # Speeds in m/s
+    V = np.array([11.0, 11.0])           # Speeds in knots
     fore_draft = np.array([14.3, 14.5]) # Fore drafts in meters
     aft_draft = np.array([15.0, 15.1])  # Aft drafts in meters
 
