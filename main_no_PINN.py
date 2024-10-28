@@ -25,16 +25,20 @@ class ShipSpeedPredictorModel:
     class ShipSpeedPredictor(nn.Module):
         def __init__(self, input_size):
             super().__init__()
-            self.fc1 = nn.Linear(input_size, 128)
-            self.fc2 = nn.Linear(128, 64)
+            self.fc1 = nn.Linear(input_size, 64)
+            self.fc2 = nn.Linear(64, 64)
             self.fc3 = nn.Linear(64, 32)
-            self.fc4 = nn.Linear(32, 1)
+            self.fc4 = nn.Linear(32, 32)
+            self.fc5 = nn.Linear(32, 16)
+            self.fc6 = nn.Linear(16, 1)
 
         def forward(self, x):
             x = torch.relu(self.fc1(x))
             x = torch.relu(self.fc2(x))
             x = torch.relu(self.fc3(x))
-            x = self.fc4(x)
+            x = torch.relu(self.fc4(x))
+            x = torch.relu(self.fc5(x))
+            x = self.fc6(x)
             return x
 
     def get_device(self):
@@ -189,7 +193,7 @@ class ShipSpeedPredictorModel:
 if __name__ == "__main__":
     # Load data using the DataProcessor class
     data_processor = DataProcessor(
-        file_path='data/Pig/P data_20230201-20230801_Democritos.csv',
+        file_path='data/Aframax/P data_20200213-20200726_Democritos.csv',
         target_column='Power',
         drop_columns=['TIME']
     )

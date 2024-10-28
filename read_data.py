@@ -75,7 +75,7 @@ class DataProcessor:
 
 if __name__ == "__main__":
     # Example usage of DataProcessor when run independently
-    file_path = 'data/Pig/P data_20230201-20230801_Democritos.csv'  # Update with your actual file path
+    file_path = 'data/Aframax/P data_20200213-20200726_Democritos.csv'  # Update with your actual file path
     target_column = 'Power'  # Update with your actual target column
     drop_columns = ['TIME']  # Update with columns you wish to drop
 

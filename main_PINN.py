@@ -18,8 +18,8 @@ class ShipSpeedPredictorModel:
         self.batch_size = batch_size  # Part of hyperparameter search
         self.optimizer_choice = optimizer_choice  # Manually specified
         self.loss_function_choice = loss_function_choice  # Manually specified
-        self.alpha = alpha  # Part of hyperparameter search
-        self.beta = beta    # Part of hyperparameter search
+        self.alpha = alpha  # Manually specified
+        self.beta = beta    # Manually specified
         self.device = self.get_device()
 
         # Initialize the model
@@ -28,16 +28,20 @@ class ShipSpeedPredictorModel:
     class ShipSpeedPredictor(nn.Module):
         def __init__(self, input_size):
             super().__init__()
-            self.fc1 = nn.Linear(input_size, 128)
-            self.fc2 = nn.Linear(128, 64)
+            self.fc1 = nn.Linear(input_size, 64)
+            self.fc2 = nn.Linear(64, 64)
             self.fc3 = nn.Linear(64, 32)
-            self.fc4 = nn.Linear(32, 1)
+            self.fc4 = nn.Linear(32, 32)
+            self.fc5 = nn.Linear(32, 16)
+            self.fc6 = nn.Linear(16, 1)
 
         def forward(self, x):
             x = torch.relu(self.fc1(x))
             x = torch.relu(self.fc2(x))
             x = torch.relu(self.fc3(x))
-            x = self.fc4(x)
+            x = torch.relu(self.fc4(x))
+            x = torch.relu(self.fc5(x))
+            x = self.fc6(x)
             return x
 
     def get_device(self):
@@ -89,8 +93,6 @@ class ShipSpeedPredictorModel:
                                F_nt, C_f, C_a, k, STWAVE1, alpha_trim, eta_D):
         """Use unscaled values for physics calculations"""
 
-        # Ensure that V and predicted_power are in the correct units (e.g., V in m/s, predicted_power in Watts)
-
         # Frictional Resistance (R_F)
         R_F = 0.5 * rho * V**2 * S * C_f
 
@@ -126,7 +128,7 @@ class ShipSpeedPredictorModel:
 
         # Constants for physics-based loss
         rho = 1025.0  # Water density (kg/m³)
-        S = 3000.0  # Wetted surface area in m² (example value)
+        S = 9950.0  # Wetted surface area in m² (example value)
         S_APP = 150.0  # Wetted surface area of appendages in m² (example value)
         A_t = 50.0  # Transom area in m² (example value)
         F_nt = 0.3  # Transom Froude number (example value)
@@ -135,11 +137,13 @@ class ShipSpeedPredictorModel:
         k = 0.15  # Form factor (dimensionless)
         STWAVE1 = 0.001  # Base wave resistance coefficient
         alpha_trim = 0.1  # Coefficient representing the effect of trim on wave resistance
-        eta_D = 0.65  # Propulsive efficiency (example value)
+        eta_D = 0.9  # Propulsive efficiency (example value)
 
         for epoch in range(self.epochs):
             self.model.train()
             running_loss = 0.0
+            running_data_loss = 0.0
+            running_physics_loss = 0.0
 
             # Determine the total number of batches
             total_batches = len(train_loader)
@@ -170,7 +174,7 @@ class ShipSpeedPredictorModel:
 
                 # Convert V to correct units if necessary
                 # For example, if V is in knots, convert to m/s
-                # V = V * 0.51444  # Uncomment if V is in knots
+                V = V * 0.51444  # Uncomment if V is in knots
 
                 # Physics-based loss
                 physics_loss = self.calculate_physics_loss(
@@ -184,12 +188,22 @@ class ShipSpeedPredictorModel:
                 # Backward pass and optimization
                 total_loss.backward()
                 optimizer.step()
+
+                # Update running losses
                 running_loss += total_loss.item()
+                running_data_loss += data_loss.item()
+                running_physics_loss += physics_loss.mean().item()
 
-                # Update progress bar with current loss
-                progress_bar.set_postfix({"Batch Loss": f"{running_loss/total_batches:.4f}"})
+                # Update progress bar with current losses
+                progress_bar.set_postfix({
+                    "Total Loss": f"{running_loss/total_batches:.4f}",
+                    "Data Loss": f"{running_data_loss/total_batches:.4f}",
+                    "Physics Loss": f"{running_physics_loss/total_batches:.4f}"
+                })
 
-            print(f"Epoch [{epoch+1}/{self.epochs}], Loss: {running_loss/total_batches:.4f}")
+            print(f"Epoch [{epoch+1}/{self.epochs}], Total Loss: {running_loss/total_batches:.4f}, "
+                  f"Data Loss: {running_data_loss/total_batches:.4f}, "
+                  f"Physics Loss: {running_physics_loss/total_batches:.4f}")
 
     def evaluate(self, X_eval, y_eval, dataset_type="Validation"):
         """Function to evaluate the model on the given dataset (validation or test)."""
@@ -244,7 +258,7 @@ class ShipSpeedPredictorModel:
 
     @staticmethod
     def hyperparameter_search(X_train, X_train_unscaled, y_train, feature_indices,
-                              param_grid, epochs, optimizer, loss_function, k_folds=5):
+                              param_grid, epochs, optimizer, loss_function, alpha, beta, k_folds=5):
         """Function to perform hyperparameter search with cross-validation."""
         best_params = None
         best_loss = float('inf')
@@ -252,13 +266,11 @@ class ShipSpeedPredictorModel:
         # Generate all combinations of hyperparameters
         hyperparameter_combinations = list(product(
             param_grid['lr'],
-            param_grid['batch_size'],
-            param_grid['alpha'],
-            param_grid['beta']
+            param_grid['batch_size']
         ))
 
-        for lr, batch_size, alpha, beta in hyperparameter_combinations:
-            print(f"\nTesting combination: lr={lr}, batch_size={batch_size}, alpha={alpha}, beta={beta}")
+        for lr, batch_size in hyperparameter_combinations:
+            print(f"\nTesting combination: lr={lr}, batch_size={batch_size}")
 
             # Initialize model with the current hyperparameters
             model = ShipSpeedPredictorModel(
@@ -280,7 +292,7 @@ class ShipSpeedPredictorModel:
             # Update the best combination if this one is better
             if avg_val_loss < best_loss:
                 best_loss = avg_val_loss
-                best_params = {'lr': lr, 'batch_size': batch_size, 'alpha': alpha, 'beta': beta}
+                best_params = {'lr': lr, 'batch_size': batch_size}
 
         print(f"\nBest parameters: {best_params}, with average validation loss: {best_loss:.4f}")
         return best_params, best_loss
@@ -288,7 +300,7 @@ class ShipSpeedPredictorModel:
 if __name__ == "__main__":
     # Load data using the DataProcessor class
     data_processor = DataProcessor(
-        file_path='data/Pig/P data_20230201-20230801_Democritos.csv',
+        file_path='data/Aframax/P data_20200213-20200726_Democritos.csv',
         target_column='Power',
         drop_columns=['TIME']
     )
@@ -311,23 +323,23 @@ if __name__ == "__main__":
         if col not in feature_indices:
             raise ValueError(f"Required column '{col}' not found in data")
 
-    # Define hyperparameter grid (search for learning rate, batch size, alpha, and beta)
+    # Define hyperparameter grid (search for learning rate and batch size only)
     param_grid = {
         'lr': [0.001, 0.01],        # Learning rate values to search
-        'batch_size': [32, 64],     # Batch size values to search
-        'alpha': [1.0, 0.5],        # Alpha values to search
-        'beta': [0.1, 0.01]         # Beta values to search
+        'batch_size': [32, 64]      # Batch size values to search
     }
 
     # Manually specify other hyperparameters
     epochs = 2
     optimizer = 'Adam'
     loss_function = 'MSE'
+    alpha = 1.0   # Manually specified
+    beta = 0.01    # Manually specified
 
     # Perform hyperparameter search with cross-validation
     best_params, best_loss = ShipSpeedPredictorModel.hyperparameter_search(
         X_train, X_train_unscaled, y_train, feature_indices,
-        param_grid, epochs, optimizer, loss_function, k_folds=5
+        param_grid, epochs, optimizer, loss_function, alpha, beta, k_folds=5
     )
 
     # Train the final model with the best hyperparameters
@@ -338,8 +350,8 @@ if __name__ == "__main__":
         optimizer_choice=optimizer,              # Manually specified
         loss_function_choice=loss_function,      # Manually specified
         batch_size=best_params['batch_size'],    # Best batch size
-        alpha=best_params['alpha'],              # Best alpha
-        beta=best_params['beta']                 # Best beta
+        alpha=alpha,                             # Manually specified alpha
+        beta=beta                                # Manually specified beta
     )
 
     # Prepare the data loaders for the final model
