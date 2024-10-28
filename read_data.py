@@ -20,6 +20,12 @@ class DataProcessor:
         if self.drop_columns is not None:
             self.df = self.df.drop(columns=self.drop_columns)
 
+        # Drop rows where 'Speed-Through-Water' is less than 4**
+        if 'Speed-Through-Water' in self.df.columns:
+            self.df = self.df[self.df['Speed-Through-Water'] >= 4]
+        else:
+            raise ValueError("Column 'Speed-Through-Water' not found in the dataset.")
+
         # Check for missing values and fill them
         self.df.fillna(self.df.mean(), inplace=True)
 
@@ -90,4 +96,4 @@ if __name__ == "__main__":
     data_processor.print_dataset_head(X_train, X_test)
 
     # List all column names
-    data_processor.list_column_names()
+    #data_processor.list_column_names()
