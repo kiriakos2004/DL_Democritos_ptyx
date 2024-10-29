@@ -60,6 +60,17 @@ This will:
 - Scale the features using StandardScaler.
 - Split the data into training and testing sets.
 
+### Check functions used for Physical Loss of PINN
+
+In order to check if the equations used at the physical part of loss accurately predict power:
+        
+        calculate_shaft_power.py
+        
+ This script will:
+
+- Calculate the power needed in different combinations of Speed and Fore / Aft draught.
+- User must compare results with training data in different Speeds and Fore / Aft draughts.
+
 ### Running the Data-Driven Model
 
 To train and evaluate the purely data-driven neural network model:
