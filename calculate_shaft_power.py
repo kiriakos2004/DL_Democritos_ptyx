@@ -61,9 +61,9 @@ if __name__ == "__main__":
     import numpy as np
 
     # Example inputs
-    V = np.array([11.0, 11.0])           # Speeds in knots
-    fore_draft = np.array([14.3, 14.5]) # Fore drafts in meters
-    aft_draft = np.array([15.0, 15.1])  # Aft drafts in meters
+    V = np.array([6.78, 11.0]) # Speeds in knots
+    fore_draft = np.array([6.3, 14.5]) # Fore drafts in meters
+    aft_draft = np.array([7.6, 15.1])  # Aft drafts in meters
 
     # Ship-specific constants
     rho = 1025.0      # kg/m³
@@ -85,4 +85,4 @@ if __name__ == "__main__":
     )
 
     for speed, fore_d, aft_d, power in zip(V, fore_draft, aft_draft, P_S):
-        print(f"At speed {speed} m/s, fore draft {fore_d} m, aft draft {aft_d} m, the shaft power is {power:.2f} KWatts")
+        print(f"At speed {speed} knots, fore draft {fore_d} m, aft draft {aft_d} m, the shaft power is {power:.2f} KWatts")
