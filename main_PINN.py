@@ -102,36 +102,57 @@ class ShipSpeedPredictorModel:
         return unscaled_loader
 
     def calculate_physics_loss(self, V, trim, predicted_power, rho, S, S_APP, A_t,
-                               F_nt, C_f, C_a, k, STWAVE1, alpha_trim, eta_D):
-        """Use unscaled values for physics calculations"""
-
+                            C_a, k, STWAVE1, alpha_trim, eta_D, L, nu, g, L_t):
+        """Use unscaled values for physics calculations, with speed-dependent C_f and F_nt."""
+        
+        g = torch.tensor(g, device=V.device, dtype=V.dtype)
+        L_t = torch.tensor(L_t, device=V.device, dtype=V.dtype)
+        L = torch.tensor(L, device=V.device, dtype=V.dtype)
+        nu = torch.tensor(nu, device=V.device, dtype=V.dtype)
+        
+        # Ensure V is not zero to avoid division by zero errors
+        V = torch.clamp(V, min=1e-5)
+        
+        # Calculate Reynolds number Re
+        Re = V * L / nu
+        
+        # Avoid log of zero or negative numbers
+        Re = torch.clamp(Re, min=1e-5)
+        
+        # Calculate frictional resistance coefficient C_f using ITTC-1957 formula
+        C_f = 0.075 / (torch.log10(Re) - 2) ** 2
+        
         # Frictional Resistance (R_F)
         R_F = 0.5 * rho * V**2 * S * C_f
-
+        
         # Wave-Making Resistance (R_W)
         STWAVE2 = 1 + alpha_trim * trim  # Dynamic correction factor involving trim
         C_W = STWAVE1 * STWAVE2
         R_W = 0.5 * rho * V**2 * S * C_W
-
+        
         # Appendage Resistance (R_APP)
         R_APP = 0.5 * rho * V**2 * S_APP * C_f
-
+        
+        # Calculate F_nt (Transom Froude Number)
+        F_nt = V / torch.sqrt(g * L_t)
+        
         # Transom Stern Resistance (R_TR)
         R_TR = 0.5 * rho * V**2 * A_t * (1 - F_nt)
-
+        
         # Correlation Allowance Resistance (R_C)
         R_C = 0.5 * rho * V**2 * S * C_a
-
+        
         # Total Resistance (R_T)
         R_T = R_F * (1 + k) + R_W + R_APP + R_TR + R_C
-
+        
         # Calculate shaft power (P_S)
-        P_S = ((V * R_T) / eta_D)/1000
-
+        P_S = ((V * R_T) / eta_D) / 1000  # Convert to kilowatts if necessary
+        
         # Calculate physics-based loss as the squared difference
         physics_loss = (predicted_power.squeeze() - P_S) ** 2
-
+        
         return physics_loss
+
 
     def train(self, train_loader, unscaled_data_loader, feature_indices):
         """Function to train the model, now including the physics-based loss."""
@@ -139,17 +160,19 @@ class ShipSpeedPredictorModel:
         loss_function = self.get_loss_function()
 
         # Constants for physics-based loss
-        rho = 1025.0  # Water density (kg/m³)
-        S = 9950.0  # Wetted surface area in m² (example value)
-        S_APP = 150.0  # Wetted surface area of appendages in m² (example value)
-        A_t = 50.0  # Transom area in m² (example value)
-        F_nt = 0.3  # Transom Froude number (example value)
-        C_f = 0.0025  # Frictional resistance coefficient (example value)
-        C_a = 0.00045  # Correlation allowance coefficient
-        k = 0.15  # Form factor (dimensionless)
-        STWAVE1 = 0.001  # Base wave resistance coefficient
-        alpha_trim = 0.1  # Coefficient representing the effect of trim on wave resistance
-        eta_D = 0.84  # Propulsive efficiency (example value)
+        rho = 1025.0      # Water density (kg/m³)
+        S = 9950.0        # Wetted surface area in m²
+        S_APP = 150.0     # Wetted surface area of appendages in m²
+        A_t = 50.0        # Transom area in m²
+        C_a = 0.00045     # Correlation allowance coefficient
+        k = 0.15          # Form factor (dimensionless)
+        STWAVE1 = 0.001   # Base wave resistance coefficient
+        alpha_trim = 0.1  # Effect of trim on wave resistance
+        eta_D = 0.84      # Propulsive efficiency
+        L = 230.0         # Ship length in meters
+        nu = 1e-6         # Kinematic viscosity of water (m²/s)
+        g = 9.81          # Gravitational acceleration (m/s²)
+        L_t = 20.0        # Transom length in meters
 
         for epoch in range(self.epochs):
             self.model.train()
@@ -176,22 +199,20 @@ class ShipSpeedPredictorModel:
                 data_loss = loss_function(outputs, y_batch)
 
                 # Extract speed and trim from unscaled features for physics-based loss
-                # Use feature indices to get correct columns
-                speed_idx = feature_indices['Speed-Through-Water']  # Replace with your actual column name
-                fore_draft_idx = feature_indices['Draft_Fore']      # Replace with your actual column name
-                aft_draft_idx = feature_indices['Draft_Aft']        # Replace with your actual column name
+                speed_idx = feature_indices['Speed-Through-Water']  # Adjust as necessary
+                fore_draft_idx = feature_indices['Draft_Fore']      # Adjust as necessary
+                aft_draft_idx = feature_indices['Draft_Aft']        # Adjust as necessary
 
                 V = X_unscaled_batch[:, speed_idx]  # Speed in m/s
                 trim = X_unscaled_batch[:, fore_draft_idx] - X_unscaled_batch[:, aft_draft_idx]  # Trim in meters
 
-                # Convert V to correct units if necessary
-                # For example, if V is in knots, convert to m/s
+                # Convert V to correct units if necessary (e.g., if V is in knots)
                 V = V * 0.51444  # Uncomment if V is in knots
 
                 # Physics-based loss
                 physics_loss = self.calculate_physics_loss(
-                    V, trim, outputs, rho, S, S_APP, A_t, F_nt, C_f, C_a, k,
-                    STWAVE1, alpha_trim, eta_D
+                    V, trim, outputs, rho, S, S_APP, A_t, C_a, k,
+                    STWAVE1, alpha_trim, eta_D, L, nu, g, L_t
                 )
 
                 # Combine the losses using hyperparameters alpha and beta
@@ -214,9 +235,9 @@ class ShipSpeedPredictorModel:
                 })
 
             print(f"Epoch [{epoch+1}/{self.epochs}], Total Loss: {running_loss/total_batches:.4f}, "
-                  f"Data Loss: {running_data_loss/total_batches:.4f}, "
-                  f"Physics Loss: {running_physics_loss/total_batches:.4f}")
-
+                f"Data Loss: {running_data_loss/total_batches:.4f}, "
+                f"Physics Loss: {running_physics_loss/total_batches:.4f}")
+        
     def evaluate(self, X_eval, y_eval, dataset_type="Validation"):
         """Function to evaluate the model on the given dataset (validation or test)."""
         self.model.eval()  # Set the model to evaluation mode
