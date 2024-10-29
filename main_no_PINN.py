@@ -8,7 +8,17 @@ import numpy as np
 from itertools import product
 from tqdm import tqdm
 from read_data import DataProcessor
-import pandas as pd  # Import pandas if not already imported
+import pandas as pd
+
+# Custom weight initialization function
+def initialize_weights(model):
+    """Function customly initialize weights in order to make results between PINN and no_PINN more comparable."""
+    for layer in model.modules():
+        if isinstance(layer, nn.Linear):
+            # Use Kaiming uniform initialization for the linear layers
+            nn.init.kaiming_uniform_(layer.weight, nonlinearity='relu')
+            if layer.bias is not None:
+                nn.init.zeros_(layer.bias)
 
 class ShipSpeedPredictorModel:
     def __init__(self, input_size, lr=0.001, epochs=100, batch_size=32, optimizer_choice='Adam', loss_function_choice='MSE'):
@@ -19,26 +29,28 @@ class ShipSpeedPredictorModel:
         self.loss_function_choice = loss_function_choice  # Manually specified
         self.device = self.get_device()
 
+        # Set random seed for reproducibility
+        torch.manual_seed(42)
+        
         # Initialize the model
         self.model = self.ShipSpeedPredictor(input_size).to(self.device)
+        initialize_weights(self.model)  # Apply custom initialization
 
     class ShipSpeedPredictor(nn.Module):
         def __init__(self, input_size):
             super().__init__()
-            self.fc1 = nn.Linear(input_size, 64)
-            self.fc2 = nn.Linear(64, 64)
+            self.fc1 = nn.Linear(input_size, 128)
+            self.fc2 = nn.Linear(128, 64)
             self.fc3 = nn.Linear(64, 32)
-            self.fc4 = nn.Linear(32, 32)
-            self.fc5 = nn.Linear(32, 16)
-            self.fc6 = nn.Linear(16, 1)
+            self.fc4 = nn.Linear(32, 16)
+            self.fc5 = nn.Linear(16, 1)
 
         def forward(self, x):
             x = torch.relu(self.fc1(x))
             x = torch.relu(self.fc2(x))
             x = torch.relu(self.fc3(x))
             x = torch.relu(self.fc4(x))
-            x = torch.relu(self.fc5(x))
-            x = self.fc6(x)
+            x = self.fc5(x)
             return x
 
     def get_device(self):

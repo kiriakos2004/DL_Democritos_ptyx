@@ -10,6 +10,16 @@ from itertools import product
 from tqdm import tqdm
 from read_data import DataProcessor
 
+# Custom weight initialization function
+def initialize_weights(model):
+    """Function customly initialize weights in order to make results between PINN and no_PINN more comparable."""
+    for layer in model.modules():
+        if isinstance(layer, nn.Linear):
+            # Use Kaiming uniform initialization for the linear layers
+            nn.init.kaiming_uniform_(layer.weight, nonlinearity='relu')
+            if layer.bias is not None:
+                nn.init.zeros_(layer.bias)
+
 class ShipSpeedPredictorModel:
     def __init__(self, input_size, lr=0.001, epochs=100, batch_size=32,
                  optimizer_choice='Adam', loss_function_choice='MSE', alpha=1.0, beta=0.1):
@@ -22,8 +32,12 @@ class ShipSpeedPredictorModel:
         self.beta = beta    # Manually specified
         self.device = self.get_device()
 
+        # Set random seed for reproducibility
+        torch.manual_seed(42)
+        
         # Initialize the model
         self.model = self.ShipSpeedPredictor(input_size).to(self.device)
+        initialize_weights(self.model)  # Apply custom initialization
 
     class ShipSpeedPredictor(nn.Module):
         def __init__(self, input_size):
