@@ -1,5 +1,3 @@
-# test.py
-
 import numpy as np
 
 def calculate_shaft_power(V_knots, trim, rho, S, S_APP, A_t,
