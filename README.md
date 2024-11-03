@@ -64,12 +64,12 @@ This will:
 
 In order to check if the equations used at the physical part of loss accurately predict power:
         
-        calculate_shaft_power.py
+        power_charts.py
         
  This script will:
 
-- Calculate the power needed in different combinations of Speed and Fore / Aft draught.
-- User must compare results with training data in different Speeds and Fore / Aft draughts.
+- Use unscaled data from data loader to Calculate the power needed.
+- Display in a common diagramm the calculated power and the power specified on the data in order to visualy compare the allingment.
 
 ### Running the Data-Driven Model
 
