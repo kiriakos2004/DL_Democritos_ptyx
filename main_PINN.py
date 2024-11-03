@@ -1,5 +1,5 @@
-import torch
 import os
+import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
@@ -12,7 +12,7 @@ from read_data import DataProcessor
 
 # Custom weight initialization function
 def initialize_weights(model):
-    """Function customly initialize weights in order to make results between PINN and no_PINN more comparable."""
+    """Function to customly initialize weights in order to make results between PINN and no_PINN more comparable."""
     for layer in model.modules():
         if isinstance(layer, nn.Linear):
             # Use Kaiming uniform initialization for the linear layers
@@ -34,7 +34,7 @@ class ShipSpeedPredictorModel:
 
         # Set random seed for reproducibility
         torch.manual_seed(42)
-        
+
         # Initialize the model
         self.model = self.ShipSpeedPredictor(input_size).to(self.device)
         initialize_weights(self.model)  # Apply custom initialization
@@ -101,60 +101,66 @@ class ShipSpeedPredictorModel:
 
         return unscaled_loader
 
-    def calculate_physics_loss(self, V, trim, predicted_power, rho, S, S_APP, A_t,
-                            C_a, k, STWAVE1, alpha_trim, eta_D, L, nu, g, L_t):
+    def calculate_physics_loss(self, V, trim, predicted_power_scaled, rho, S, S_APP, A_t,
+                               C_a, k, STWAVE1, alpha_trim, eta_D, L, nu, g, L_t, data_processor):
         """Use unscaled values for physics calculations, with speed-dependent C_f and F_nt."""
-        
+        # Physics constants
         g = torch.tensor(g, device=V.device, dtype=V.dtype)
         L_t = torch.tensor(L_t, device=V.device, dtype=V.dtype)
         L = torch.tensor(L, device=V.device, dtype=V.dtype)
         nu = torch.tensor(nu, device=V.device, dtype=V.dtype)
-        
+
         # Ensure V is not zero to avoid division by zero errors
         V = torch.clamp(V, min=1e-5)
-        
+
         # Calculate Reynolds number Re
         Re = V * L / nu
-        
+
         # Avoid log of zero or negative numbers
         Re = torch.clamp(Re, min=1e-5)
-        
+
         # Calculate frictional resistance coefficient C_f using ITTC-1957 formula
         C_f = 0.075 / (torch.log10(Re) - 2) ** 2
-        
+
         # Frictional Resistance (R_F)
         R_F = 0.5 * rho * V**2 * S * C_f
-        
+
         # Wave-Making Resistance (R_W)
         STWAVE2 = 1 + alpha_trim * trim  # Dynamic correction factor involving trim
         C_W = STWAVE1 * STWAVE2
         R_W = 0.5 * rho * V**2 * S * C_W
-        
+
         # Appendage Resistance (R_APP)
         R_APP = 0.5 * rho * V**2 * S_APP * C_f
-        
+
         # Calculate F_nt (Transom Froude Number)
         F_nt = V / torch.sqrt(g * L_t)
-        
+
         # Transom Stern Resistance (R_TR)
         R_TR = 0.5 * rho * V**2 * A_t * (1 - F_nt)
-        
+
         # Correlation Allowance Resistance (R_C)
         R_C = 0.5 * rho * V**2 * S * C_a
-        
+
         # Total Resistance (R_T)
         R_T = R_F * (1 + k) + R_W + R_APP + R_TR + R_C
-        
+
         # Calculate shaft power (P_S)
         P_S = ((V * R_T) / eta_D) / 1000  # Convert to kilowatts if necessary
-        
-        # Calculate physics-based loss as the squared difference
-        physics_loss = (predicted_power.squeeze() - P_S) ** 2
-        
-        return physics_loss
 
+        # Convert P_S to a DataFrame with the same column name as the target
+        P_S_df = pd.DataFrame(P_S.cpu().detach().numpy(), columns=[data_processor.target_column])
 
-    def train(self, train_loader, unscaled_data_loader, feature_indices):
+        # Scale P_S using the same scaler as the target variable
+        P_S_scaled = data_processor.scaler_y.transform(P_S_df).flatten()
+        P_S_scaled = torch.tensor(P_S_scaled, dtype=V.dtype, device=V.device)
+
+        # Compute physics loss in scaled space to match data loss scale
+        physics_loss = (predicted_power_scaled.squeeze() - P_S_scaled) ** 2
+
+        return physics_loss, P_S_scaled
+
+    def train(self, train_loader, unscaled_data_loader, feature_indices, data_processor):
         """Function to train the model, now including the physics-based loss."""
         optimizer = self.get_optimizer()
         loss_function = self.get_loss_function()
@@ -191,7 +197,8 @@ class ShipSpeedPredictorModel:
                 total=total_batches
             )
 
-            for (X_batch, y_batch), (X_unscaled_batch,) in progress_bar:
+            # Modify the loop to include batch_index
+            for batch_index, ((X_batch, y_batch), (X_unscaled_batch,)) in enumerate(progress_bar):
                 optimizer.zero_grad()  # Zero out the gradients
                 outputs = self.model(X_batch)  # Forward pass
 
@@ -203,17 +210,30 @@ class ShipSpeedPredictorModel:
                 fore_draft_idx = feature_indices['Draft_Fore']      # Adjust as necessary
                 aft_draft_idx = feature_indices['Draft_Aft']        # Adjust as necessary
 
-                V = X_unscaled_batch[:, speed_idx]  # Speed in m/s
+                V = X_unscaled_batch[:, speed_idx]  # Speed in knots (assuming the data is in knots)
                 trim = X_unscaled_batch[:, fore_draft_idx] - X_unscaled_batch[:, aft_draft_idx]  # Trim in meters
 
-                # Convert V to correct units if necessary (e.g., if V is in knots)
-                V = V * 0.51444  # Uncomment if V is in knots
+                # Convert V to m/s if necessary (e.g., if V is in knots)
+                V = V * 0.51444  # Convert knots to m/s
 
                 # Physics-based loss
-                physics_loss = self.calculate_physics_loss(
+                physics_loss, P_S_scaled = self.calculate_physics_loss(
                     V, trim, outputs, rho, S, S_APP, A_t, C_a, k,
-                    STWAVE1, alpha_trim, eta_D, L, nu, g, L_t
+                    STWAVE1, alpha_trim, eta_D, L, nu, g, L_t, data_processor
                 )
+
+                # **Insert Debugging Print Statements Here**
+                if epoch == 0 and batch_index == 0:
+                    # Inverse transform outputs and y_batch to original scale
+                    outputs_original = data_processor.inverse_transform_y(outputs.cpu().detach().numpy())
+                    y_batch_original = data_processor.inverse_transform_y(y_batch.cpu().numpy())
+                    P_S_original = data_processor.inverse_transform_y(P_S_scaled.cpu().numpy())
+
+                    print("Sample predicted_power:", outputs_original[:5])
+                    print("Sample y_batch:", y_batch_original[:5])
+                    print("Sample P_S:", P_S_original[:5])
+                    print("Data Loss:", data_loss.item())
+                    print("Physics Loss:", physics_loss.mean().item())
 
                 # Combine the losses using hyperparameters alpha and beta
                 total_loss = self.alpha * data_loss + self.beta * torch.mean(physics_loss)
@@ -235,10 +255,10 @@ class ShipSpeedPredictorModel:
                 })
 
             print(f"Epoch [{epoch+1}/{self.epochs}], Total Loss: {running_loss/total_batches:.4f}, "
-                f"Data Loss: {running_data_loss/total_batches:.4f}, "
-                f"Physics Loss: {running_physics_loss/total_batches:.4f}")
-        
-    def evaluate(self, X_eval, y_eval, dataset_type="Validation"):
+                  f"Data Loss: {running_data_loss/total_batches:.4f}, "
+                  f"Physics Loss: {running_physics_loss/total_batches:.4f}")
+
+    def evaluate(self, X_eval, y_eval, dataset_type="Validation", data_processor=None):
         """Function to evaluate the model on the given dataset (validation or test)."""
         self.model.eval()  # Set the model to evaluation mode
         X_eval_tensor = torch.tensor(X_eval.values, dtype=torch.float32).to(self.device)
@@ -249,11 +269,21 @@ class ShipSpeedPredictorModel:
             outputs = self.model(X_eval_tensor)
             loss = loss_function(outputs, y_eval_tensor)
             print(f"\n{dataset_type} Loss: {loss.item():.4f}")
+
+            if data_processor:
+                # Inverse transform outputs and y_eval to original scale
+                outputs_original = data_processor.inverse_transform_y(outputs.cpu().numpy())
+                y_eval_original = data_processor.inverse_transform_y(y_eval_tensor.cpu().numpy())
+
+                # Calculate evaluation metrics (e.g., RMSE)
+                rmse = np.sqrt(np.mean((outputs_original - y_eval_original) ** 2))
+                print(f"{dataset_type} RMSE: {rmse:.2f}")
+
         return loss.item()
 
-    def cross_validate(self, X, X_unscaled, y, feature_indices, k_folds=5):
+    def cross_validate(self, X, X_unscaled, y, feature_indices, data_processor, k_folds=5):
         """Function to perform cross-validation on the model using training and validation data."""
-        kfold = KFold(n_splits=k_folds, shuffle=True)
+        kfold = KFold(n_splits=k_folds, shuffle=True, random_state=42)
         fold_results = []
 
         for fold, (train_idx, val_idx) in enumerate(kfold.split(X)):
@@ -272,10 +302,10 @@ class ShipSpeedPredictorModel:
             self.model.apply(self.reset_weights)
 
             # Train the model on the training split
-            self.train(train_loader, unscaled_data_loader, feature_indices)
+            self.train(train_loader, unscaled_data_loader, feature_indices, data_processor)
 
             # Evaluate the model on the validation split
-            val_loss = self.evaluate(X_val, y_val, dataset_type="Validation")
+            val_loss = self.evaluate(X_val, y_val, dataset_type="Validation", data_processor=data_processor)
             fold_results.append(val_loss)
 
         # Calculate average validation loss across all folds
@@ -291,7 +321,7 @@ class ShipSpeedPredictorModel:
 
     @staticmethod
     def hyperparameter_search(X_train, X_train_unscaled, y_train, feature_indices,
-                              param_grid, epochs, optimizer, loss_function, alpha, beta, k_folds=5):
+                              param_grid, epochs, optimizer, loss_function, alpha, beta, data_processor, k_folds=5):
         """Function to perform hyperparameter search with cross-validation."""
         best_params = None
         best_loss = float('inf')
@@ -319,7 +349,7 @@ class ShipSpeedPredictorModel:
 
             # Perform cross-validation
             avg_val_loss = model.cross_validate(
-                X_train, X_train_unscaled, y_train, feature_indices, k_folds=k_folds
+                X_train, X_train_unscaled, y_train, feature_indices, data_processor, k_folds=k_folds
             )
 
             # Update the best combination if this one is better
@@ -337,62 +367,64 @@ if __name__ == "__main__":
         target_column='Power',
         drop_columns=['TIME']
     )
-    X_train, X_test, X_train_unscaled, X_test_unscaled, y_train, y_test = data_processor.load_and_prepare_data()
+    result = data_processor.load_and_prepare_data()
+    if result is not None:
+        X_train, X_test, X_train_unscaled, X_test_unscaled, y_train, y_test, y_train_unscaled, y_test_unscaled = result
 
-    # Print dataset shapes
-    print(f"X_train shape: {X_train.shape}")
-    print(f"X_train_unscaled shape: {X_train_unscaled.shape}")
-    print(f"y_train shape: {y_train.shape}")
+        # Print dataset shapes
+        print(f"X_train shape: {X_train.shape}")
+        print(f"X_train_unscaled shape: {X_train_unscaled.shape}")
+        print(f"y_train shape: {y_train.shape}")
 
-    # Ensure that the columns are in the same order in scaled and unscaled data
-    assert list(X_train.columns) == list(X_train_unscaled.columns), "Column mismatch between scaled and unscaled data"
+        # Ensure that the columns are in the same order in scaled and unscaled data
+        assert list(X_train.columns) == list(X_train_unscaled.columns), "Column mismatch between scaled and unscaled data"
 
-    # Create a mapping from feature names to indices
-    feature_indices = {col: idx for idx, col in enumerate(X_train_unscaled.columns)}
+        # Create a mapping from feature names to indices
+        feature_indices = {col: idx for idx, col in enumerate(X_train_unscaled.columns)}
 
-    # Check if necessary columns are present
-    required_columns = ['Speed-Through-Water', 'Draft_Fore', 'Draft_Aft']  # Replace with your actual column names
-    for col in required_columns:
-        if col not in feature_indices:
-            raise ValueError(f"Required column '{col}' not found in data")
+        # Check if necessary columns are present
+        required_columns = ['Speed-Through-Water', 'Draft_Fore', 'Draft_Aft']  # Replace with your actual column names
+        for col in required_columns:
+            if col not in feature_indices:
+                raise ValueError(f"Required column '{col}' not found in data")
 
-    # Define hyperparameter grid (search for learning rate and batch size only)
-    param_grid = {
-        'lr': [0.001, 0.01],        # Learning rate values to search
-        'batch_size': [32, 64]      # Batch size values to search
-    }
+        # Define hyperparameter grid (search for learning rate and batch size only)
+        param_grid = {
+            'lr': [0.001, 0.01],        # Learning rate values to search
+            'batch_size': [32, 64]      # Batch size values to search
+        }
 
-    # Manually specify other hyperparameters
-    epochs = 8
-    optimizer = 'Adam'
-    loss_function = 'MSE'
-    alpha = 1.0   # Manually specified
-    beta = 0.01    # Manually specified
+        # Manually specify other hyperparameters
+        epochs = 8
+        optimizer = 'Adam'
+        loss_function = 'MSE'
+        alpha = 1.0   # Manually specified
+        beta = 0.00001   # Adjusted beta to balance losses
 
-    # Perform hyperparameter search with cross-validation
-    best_params, best_loss = ShipSpeedPredictorModel.hyperparameter_search(
-        X_train, X_train_unscaled, y_train, feature_indices,
-        param_grid, epochs, optimizer, loss_function, alpha, beta, k_folds=5
-    )
+        # Perform hyperparameter search with cross-validation
+        best_params, best_loss = ShipSpeedPredictorModel.hyperparameter_search(
+            X_train, X_train_unscaled, y_train, feature_indices,
+            param_grid, epochs, optimizer, loss_function, alpha, beta, data_processor, k_folds=5
+        )
 
-    # Train the final model with the best hyperparameters
-    final_model = ShipSpeedPredictorModel(
-        input_size=X_train.shape[1],
-        lr=best_params['lr'],                    # Best learning rate
-        epochs=epochs,                           # Manually specified
-        optimizer_choice=optimizer,              # Manually specified
-        loss_function_choice=loss_function,      # Manually specified
-        batch_size=best_params['batch_size'],    # Best batch size
-        alpha=alpha,                             # Manually specified alpha
-        beta=beta                                # Manually specified beta
-    )
+        # Train the final model with the best hyperparameters
+        final_model = ShipSpeedPredictorModel(
+            input_size=X_train.shape[1],
+            lr=best_params['lr'],                    # Best learning rate
+            epochs=epochs,                           # Manually specified
+            optimizer_choice=optimizer,              # Manually specified
+            loss_function_choice=loss_function,      # Manually specified
+            batch_size=best_params['batch_size'],    # Best batch size
+            alpha=alpha,                             # Manually specified alpha
+            beta=beta                                # Manually specified beta
+        )
 
-    # Prepare the data loaders for the final model
-    final_train_loader = final_model.prepare_dataloader(X_train, y_train)
-    final_unscaled_loader = final_model.prepare_unscaled_dataloader(X_train_unscaled)
+        # Prepare the data loaders for the final model
+        final_train_loader = final_model.prepare_dataloader(X_train, y_train)
+        final_unscaled_loader = final_model.prepare_unscaled_dataloader(X_train_unscaled)
 
-    # Train the final model on the entire training set
-    final_model.train(final_train_loader, final_unscaled_loader, feature_indices)
+        # Train the final model on the entire training set
+        final_model.train(final_train_loader, final_unscaled_loader, feature_indices, data_processor)
 
-    # Evaluate the final model on the test set (after hyperparameter tuning)
-    final_model.evaluate(X_test, y_test, dataset_type="Test")
+        # Evaluate the final model on the test set (after hyperparameter tuning)
+        final_model.evaluate(X_test, y_test, dataset_type="Test", data_processor=data_processor)

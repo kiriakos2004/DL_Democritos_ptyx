@@ -11,7 +11,8 @@ class DataProcessor:
         self.drop_columns = drop_columns
         self.test_size = test_size
         self.random_state = random_state
-        self.scaler = StandardScaler()
+        self.scaler_X = StandardScaler()
+        self.scaler_y = StandardScaler()
         self.df = None  # Initialize the DataFrame attribute
 
     def load_and_prepare_data(self):
@@ -50,26 +51,45 @@ class DataProcessor:
 
         # Split the data into features (X) and target (y)
         X = self.df.drop(self.target_column, axis=1)  # Features
-        y = self.df[self.target_column]  # Target
+        y = self.df[[self.target_column]]  # Target (as DataFrame for scaling)
 
-        # Keep a copy of unscaled features for physics-based loss calculations
+        # Keep a copy of unscaled features and target for physics-based loss calculations
         X_unscaled = X.copy()
+        y_unscaled = y.copy()
 
         # Split the dataset into training and testing sets without shuffling
-        X_train_unscaled, X_test_unscaled, y_train, y_test = train_test_split(
-            X_unscaled, y, test_size=self.test_size, random_state=self.random_state, shuffle=False
+        X_train_unscaled, X_test_unscaled, y_train_unscaled, y_test_unscaled = train_test_split(
+            X_unscaled, y_unscaled, test_size=self.test_size, random_state=self.random_state, shuffle=False
         )
 
         # Scale the features using the training data
-        self.scaler.fit(X_train_unscaled)
-        X_train_scaled = self.scaler.transform(X_train_unscaled)
-        X_test_scaled = self.scaler.transform(X_test_unscaled)
+        self.scaler_X.fit(X_train_unscaled)
+        X_train_scaled = self.scaler_X.transform(X_train_unscaled)
+        X_test_scaled = self.scaler_X.transform(X_test_unscaled)
+
+        # Scale the target variable using the training data
+        self.scaler_y.fit(y_train_unscaled)
+        y_train_scaled = self.scaler_y.transform(y_train_unscaled)
+        y_test_scaled = self.scaler_y.transform(y_test_unscaled)
 
         # Convert scaled features back to DataFrames to maintain column names
         X_train = pd.DataFrame(X_train_scaled, columns=X_unscaled.columns)
         X_test = pd.DataFrame(X_test_scaled, columns=X_unscaled.columns)
 
-        return X_train, X_test, X_train_unscaled, X_test_unscaled, y_train, y_test
+        # Convert scaled targets to Series
+        y_train = pd.Series(y_train_scaled.flatten(), name=self.target_column)
+        y_test = pd.Series(y_test_scaled.flatten(), name=self.target_column)
+
+        return (
+            X_train,
+            X_test,
+            X_train_unscaled,
+            X_test_unscaled,
+            y_train,
+            y_test,
+            y_train_unscaled,
+            y_test_unscaled,
+        )
 
     def print_dataset_shapes(self, X_train, X_test):
         # Print the shape of the datasets
@@ -105,6 +125,10 @@ class DataProcessor:
             print(col)
         return columns  # Optional: return the list of column names
 
+    def inverse_transform_y(self, y_scaled):
+        # Inverse transform the scaled target variable
+        return self.scaler_y.inverse_transform(y_scaled.reshape(-1, 1)).flatten()
+
 if __name__ == "__main__":
     # Example usage of DataProcessor when run independently
     file_path = 'data/Aframax/P data_20200213-20200726_Democritos.csv'  # Update with your actual file path
@@ -117,11 +141,11 @@ if __name__ == "__main__":
     # Load and prepare data
     result = data_processor.load_and_prepare_data()
     if result is not None:
-        X_train, X_test, X_train_unscaled, X_test_unscaled, y_train, y_test = result
+        X_train, X_test, X_train_unscaled, X_test_unscaled, y_train, y_test, y_train_unscaled, y_test_unscaled = result
 
         # Print dataset shapes and heads
         data_processor.print_dataset_shapes(X_train, X_test)
-        #data_processor.print_dataset_head(X_train, X_test)
+        # data_processor.print_dataset_head(X_train, X_test)
 
         # List all column names
         # data_processor.list_column_names()
