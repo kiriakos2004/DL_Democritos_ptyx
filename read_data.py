@@ -3,7 +3,9 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
 class DataProcessor:
-    def __init__(self, file_path, target_column, drop_columns=None, test_size=0.2, random_state=42):
+    def __init__(
+        self, file_path, target_column, drop_columns=None, test_size=0.2, random_state=42
+    ):
         self.file_path = file_path
         self.target_column = target_column
         self.drop_columns = drop_columns
@@ -13,21 +15,38 @@ class DataProcessor:
         self.df = None  # Initialize the DataFrame attribute
 
     def load_and_prepare_data(self):
-        # Load CSV file into a DataFrame
-        self.df = pd.read_csv(self.file_path)  # Store the DataFrame in self.df
+        # Load CSV file into a DataFrame with exception handling
+        try:
+            self.df = pd.read_csv(self.file_path)
+        except FileNotFoundError:
+            print(f"File not found: {self.file_path}")
+            return None
+        except Exception as e:
+            print(f"An error occurred while reading the file: {e}")
+            return None
 
         # Drop specified columns, if provided
         if self.drop_columns is not None:
-            self.df = self.df.drop(columns=self.drop_columns)
+            for col in self.drop_columns:
+                if col in self.df.columns:
+                    self.df.drop(columns=col, inplace=True)
+                else:
+                    print(f"Warning: Column '{col}' not found in the dataset.")
 
-        # Drop rows where 'Speed-Through-Water' is less than 4**
-        if 'Speed-Through-Water' in self.df.columns:
-            self.df = self.df[self.df['Speed-Through-Water'] >= 4]
-        else:
-            raise ValueError("Column 'Speed-Through-Water' not found in the dataset.")
+        # Ensure the target column exists
+        if self.target_column not in self.df.columns:
+            print(f"Error: Target column '{self.target_column}' not found in the dataset.")
+            return None
+
+        # Drop rows where 'Power' is less than 1000
+        self.df = self.df[self.df['Power'] >= 1000]
+
+        # Drop rows where 'Speed-Through-Water' is less than 4 knots
+        self.df = self.df[self.df['Speed-Through-Water'] >= 4]
 
         # Check for missing values and fill them
-        self.df.fillna(self.df.mean(), inplace=True)
+        numeric_cols = self.df.select_dtypes(include=['float64', 'int64']).columns
+        self.df[numeric_cols] = self.df[numeric_cols].fillna(self.df[numeric_cols].mean())
 
         # Split the data into features (X) and target (y)
         X = self.df.drop(self.target_column, axis=1)  # Features
@@ -36,19 +55,19 @@ class DataProcessor:
         # Keep a copy of unscaled features for physics-based loss calculations
         X_unscaled = X.copy()
 
-        # Scale the features
-        X_scaled = self.scaler.fit_transform(X)
-
-        # Convert scaled features back to DataFrame to maintain column names
-        X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
-
-        # Split the dataset into training and testing sets
-        X_train, X_test, y_train, y_test = train_test_split(
-            X_scaled, y, test_size=self.test_size, random_state=self.random_state
+        # Split the dataset into training and testing sets without shuffling
+        X_train_unscaled, X_test_unscaled, y_train, y_test = train_test_split(
+            X_unscaled, y, test_size=self.test_size, random_state=self.random_state, shuffle=False
         )
-        X_train_unscaled, X_test_unscaled, _, _ = train_test_split(
-            X_unscaled, y, test_size=self.test_size, random_state=self.random_state
-        )
+
+        # Scale the features using the training data
+        self.scaler.fit(X_train_unscaled)
+        X_train_scaled = self.scaler.transform(X_train_unscaled)
+        X_test_scaled = self.scaler.transform(X_test_unscaled)
+
+        # Convert scaled features back to DataFrames to maintain column names
+        X_train = pd.DataFrame(X_train_scaled, columns=X_unscaled.columns)
+        X_test = pd.DataFrame(X_test_scaled, columns=X_unscaled.columns)
 
         return X_train, X_test, X_train_unscaled, X_test_unscaled, y_train, y_test
 
@@ -68,9 +87,16 @@ class DataProcessor:
     def list_column_names(self):
         # Ensure the DataFrame is loaded
         if self.df is None:
-            self.df = pd.read_csv(self.file_path)
-            if self.drop_columns is not None:
-                self.df = self.df.drop(columns=self.drop_columns)
+            try:
+                self.df = pd.read_csv(self.file_path)
+                if self.drop_columns is not None:
+                    self.df.drop(columns=self.drop_columns, inplace=True)
+            except FileNotFoundError:
+                print(f"File not found: {self.file_path}")
+                return None
+            except Exception as e:
+                print(f"An error occurred while reading the file: {e}")
+                return None
 
         # List the column names
         columns = self.df.columns.tolist()
@@ -89,11 +115,13 @@ if __name__ == "__main__":
     data_processor = DataProcessor(file_path, target_column, drop_columns)
 
     # Load and prepare data
-    X_train, X_test, X_train_unscaled, X_test_unscaled, y_train, y_test = data_processor.load_and_prepare_data()
+    result = data_processor.load_and_prepare_data()
+    if result is not None:
+        X_train, X_test, X_train_unscaled, X_test_unscaled, y_train, y_test = result
 
-    # Print dataset shapes and heads
-    data_processor.print_dataset_shapes(X_train, X_test)
-    data_processor.print_dataset_head(X_train, X_test)
+        # Print dataset shapes and heads
+        data_processor.print_dataset_shapes(X_train, X_test)
+        #data_processor.print_dataset_head(X_train, X_test)
 
-    # List all column names
-    #data_processor.list_column_names()
+        # List all column names
+        # data_processor.list_column_names()

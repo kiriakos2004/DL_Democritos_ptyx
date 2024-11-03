@@ -367,7 +367,7 @@ if __name__ == "__main__":
     optimizer = 'Adam'
     loss_function = 'MSE'
     alpha = 1.0   # Manually specified
-    beta = 0.1    # Manually specified
+    beta = 0.01    # Manually specified
 
     # Perform hyperparameter search with cross-validation
     best_params, best_loss = ShipSpeedPredictorModel.hyperparameter_search(
