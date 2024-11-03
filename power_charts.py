@@ -12,7 +12,9 @@ data_processor = DataProcessor(file_path, target_column, drop_columns)
 # Load and prepare data
 result = data_processor.load_and_prepare_data()
 if result is not None:
-    X_train, X_test, X_train_unscaled, X_test_unscaled, y_train, y_test = result
+    # Unpack all returned values
+    (X_train, X_test, X_train_unscaled, X_test_unscaled,
+     y_train, y_test, y_train_unscaled, y_test_unscaled) = result
 
     # Use the unscaled data for calculation
     V_knots = X_train_unscaled['Speed-Through-Water'].values
@@ -61,7 +63,7 @@ if result is not None:
 
     # Plot both the original power and the calculated shaft power
     plt.figure(figsize=(12, 6))
-    plt.plot(y_train.values, label='Original Power (CSV)', color='blue')
+    plt.plot(y_train_unscaled.values, label='Original Power (CSV)', color='blue')
     plt.plot(P_S, label='Calculated Shaft Power', color='green')
     plt.title('Original Power vs. Calculated Shaft Power')
     plt.xlabel('Index')
