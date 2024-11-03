@@ -21,19 +21,20 @@ if result is not None:
     trim = fore_draft - aft_draft
 
     # Constants for shaft power calculation
-    rho = 1025.0
-    S = 9950.0
-    S_APP = 150.0
-    A_t = 50.0
-    C_a = 0.00045
-    k = 0.15
-    STWAVE1 = 0.001
-    alpha_trim = 0.1
-    eta_D = 0.93
-    L = 230.0
-    nu = 1e-6
-    g = 9.81
-    L_t = 20.0
+    rho = 1025.0      # Water density (kg/m³)
+    S = 9950.0        # Wetted surface area in m²
+    S_APP = 150.0     # Wetted surface area of appendages in m²
+    A_t = 50.0        # Transom area in m²
+    C_a = 0.00045     # Correlation allowance coefficient
+    k = 0.15          # Form factor (dimensionless)
+    STWAVE1 = 0.001   # Base wave resistance coefficient
+    alpha_trim = 0.1  # Effect of trim on wave resistance
+    eta_D = 0.93      # Propulsive efficiency
+    L = 230.0         # Ship length in meters
+    nu = 1e-6         # Kinematic viscosity of water (m²/s)
+    g = 9.81          # Gravitational acceleration (m/s²)
+    L_t = 20.0        # Transom length in meters
+
 
     def calculate_shaft_power(V_knots, trim, rho, S, S_APP, A_t,
                               C_a, k, STWAVE1, alpha_trim, eta_D, L, nu, g, L_t):

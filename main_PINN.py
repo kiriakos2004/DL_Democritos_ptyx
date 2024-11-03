@@ -168,7 +168,7 @@ class ShipSpeedPredictorModel:
         k = 0.15          # Form factor (dimensionless)
         STWAVE1 = 0.001   # Base wave resistance coefficient
         alpha_trim = 0.1  # Effect of trim on wave resistance
-        eta_D = 0.84      # Propulsive efficiency
+        eta_D = 0.93      # Propulsive efficiency
         L = 230.0         # Ship length in meters
         nu = 1e-6         # Kinematic viscosity of water (m²/s)
         g = 9.81          # Gravitational acceleration (m/s²)
