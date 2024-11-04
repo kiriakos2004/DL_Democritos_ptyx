@@ -1,4 +1,4 @@
-# Predicting Ship Propulsion Power using Physics-Guided Neural Networks (PGNNs) and Physics-Informed Neural Networks
+# Predicting Ship Propulsion Power using Physics-Guided Neural Networks (PGNN) and Physics-Informed Neural Networks (PINN)
 
 ## Introduction
 
