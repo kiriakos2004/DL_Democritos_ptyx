@@ -1,20 +1,20 @@
-# Predicting Ship Propulsion Power using Physics-Informed Neural Networks (PINNs)
+# Predicting Ship Propulsion Power using Physics-Guided Neural Networks (PGNNs)
 
 ## Introduction
 
-This project belongs to master's thesis of the Inter-Institutional MSc entitled "Artificial Intelligence" that is organized by The Department of Digital Systems, School of Informatics and Communication Technologies, of University of Piraeus, and the Institute of Informatics and Telecommunications of NCSR "Demokritos". url: "https://msc-ai.iit.demokritos.gr/en".Project explores the use of Physics-Informed Neural Networks (PINNs) to predict ship propulsion power. By incorporating physical laws into the neural network training process, we aim to improve the model's predictive capabilities and assess whether PINNs offer advantages over purely data-driven models.
+This project belongs to master's thesis of the Inter-Institutional MSc entitled "Artificial Intelligence" that is organized by The Department of Digital Systems, School of Informatics and Communication Technologies, of University of Piraeus, and the Institute of Informatics and Telecommunications of NCSR "Demokritos". url: "https://msc-ai.iit.demokritos.gr/en".Project explores the use of Physics-Guided Neural Networks (PGNNs) to predict ship propulsion power. By incorporating physical laws into the neural network training process, we aim to improve the model's predictive capabilities and assess whether PGNNs offer advantages over purely data-driven models.
 
 ## Repository Structure
 
 - read_data.py: Reads and preprocesses the data, handling missing values, scaling features, and splitting the dataset into training and testing sets.
 - main_no_pinn.py: Implements a purely data-driven neural network model for predicting ship propulsion power. Includes hyperparameter tuning and model evaluation.
-- main_pinn.py: Implements a Physics-Informed Neural Network (PINN) that incorporates physical laws related to ship resistance into the training process.
+- main_pinn.py: Implements a Physics-Guided Neural Network (PGNN) that incorporates physical laws related to ship resistance into the training process.
 
 ## Features
 
 - Data Preprocessing: Handles missing values and scales features using StandardScaler.
 - Data-Driven Model: A multi-layer neural network trained solely on data to predict propulsion power.
-- Physics-Informed Neural Network: Enhances the data-driven model by adding a physics-based loss term derived from ship resistance equations.
+- Physics-Guided Neural Network: Enhances the data-driven model by adding a physics-based loss term derived from ship resistance equations.
 - Hyperparameter Tuning: Uses grid search and k-fold cross-validation to find optimal learning rates and batch sizes.
 - Model Evaluation: Provides training and validation loss during training and evaluates the final model on a test set.
 
@@ -60,7 +60,7 @@ This will:
 - Scale the features using StandardScaler.
 - Split the data into training and testing sets.
 
-### Check functions used for Physical Loss of PINN
+### Check functions used for Physical Loss of PGNN
 
 In order to check if the equations used at the physical part of loss accurately predict power:
         
@@ -75,7 +75,7 @@ In order to check if the equations used at the physical part of loss accurately 
 
 To train and evaluate the purely data-driven neural network model:
         
-        python main_no_pinn.py
+        python main_no_pgnn.py
 
 This script will:
 
@@ -84,19 +84,19 @@ This script will:
 - Train the final model with the best hyperparameters.
 - Evaluate the model on the test set.
 
-### Running the Physics-Informed Neural Network (PINN)
+### Running the Physics-Guided Neural Network (PGNN)
 
-To train and evaluate the PINN:
+To train and evaluate the PGNN:
 
-        python main_pinn.py
+        python main_pgnn.py
 
 This script:
 
 - Loads and preprocesses the data.
 - Incorporates physical laws related to ship resistance into the loss function.
 - Performs hyperparameter tuning similar to the data-driven model.
-- Trains the final PINN model with the best hyperparameters.
-- Evaluates the PINN on the test set.
+- Trains the final PGNN model with the best hyperparameters.
+- Evaluates the PGNN on the test set.
 
 ## Physics-Based Loss Function
 
