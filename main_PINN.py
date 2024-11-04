@@ -398,8 +398,8 @@ if __name__ == "__main__":
         epochs = 8
         optimizer = 'Adam'
         loss_function = 'MSE'
-        alpha = 1.0   # Manually specified
-        beta = 0.00001   # Adjusted beta to balance losses
+        alpha = 0.8   # Manually specified
+        beta = 0.2   # Manually specified
 
         # Perform hyperparameter search with cross-validation
         best_params, best_loss = ShipSpeedPredictorModel.hyperparameter_search(
