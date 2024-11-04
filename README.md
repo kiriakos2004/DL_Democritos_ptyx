@@ -114,6 +114,17 @@ This script:
 - Trains the final PGNN model with the best hyperparameters.
 - Evaluates the PGNN on the test set in terms of RMSE.
 
+## Formulation of a PDE for the Problem
+
+Assuming we can model the resistance R as a function of speed V and other variables, we will consider a PDE like:
+
+![image](https://github.com/user-attachments/assets/c72f77d4-7d20-4d31-920c-0dc76dcc7fec)
+
+Where:
+- P is the Power (the target variable of the data model).
+- V is the Speed-Through-Water.
+- a and b are constants derived from physical considerations.
+
 ## Physics-Based Loss Function
 
 The PINN incorporates a physics-based loss term calculated using ship resistance equations:
