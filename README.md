@@ -9,7 +9,7 @@ This project belongs to master's thesis of the Inter-Institutional MSc entitled 
 - read_data.py: Reads and preprocesses the data, handling missing values, scaling features, and splitting the dataset into training and testing sets.
 - main_DATA.py: Implements a purely data-driven neural network model for predicting ship propulsion power. Includes hyperparameter tuning and model evaluation.
 - main_PGNN.py: Implements a Physics-Guided Neural Network (PGNN) that incorporates physical laws related to ship resistance into the training process.
-- main_pinn.py: Implements a Physics-Informed Neural Network (PINN) that incorporates PDEs related to ship resistance into the training process.
+- main_PINN.py: Implements a Physics-Informed Neural Network (PINN) that incorporates PDEs related to ship resistance into the training process.
 
 ## Features
 
