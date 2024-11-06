@@ -169,7 +169,7 @@ class ShipSpeedPredictorModel:
         return boundary_loss
 
     def train(self, train_loader, X_train_unscaled, feature_indices, data_processor):
-        """Function to train the model, now including PDE residuals and boundary conditions."""
+        """Function to train the model, including PDE residuals and boundary conditions."""
         optimizer = self.get_optimizer()
         loss_function = self.get_loss_function()
 
@@ -356,7 +356,7 @@ if __name__ == "__main__":
         feature_indices = {col: idx for idx, col in enumerate(X_train_unscaled.columns)}
 
         # Check if necessary columns are present
-        required_columns = ['Speed-Through-Water', 'Draft_Fore', 'Draft_Aft']  # Replace with your actual column names
+        required_columns = ['Speed-Through-Water', 'Draft_Fore', 'Draft_Aft']
         for col in required_columns:
             if col not in feature_indices:
                 raise ValueError(f"Required column '{col}' not found in data")
