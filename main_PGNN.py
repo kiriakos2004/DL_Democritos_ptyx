@@ -57,9 +57,16 @@ class ShipSpeedPredictorModel:
             return x
 
     def get_device(self):
-        """Function to check if GPU is available and return the appropriate device."""
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Using device: {device}")
+        """Function to check if a GPU is available (MPS for Apple Silicon or CUDA for NVIDIA) and return the appropriate device."""
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            print("Using NVIDIA GPU with CUDA")
+        elif torch.backends.mps.is_available():
+            device = torch.device("mps")
+            print("Using Apple Silicon GPU with MPS")
+        else:
+            device = torch.device("cpu")
+            print("Using CPU")
         return device
 
     def get_optimizer(self):
