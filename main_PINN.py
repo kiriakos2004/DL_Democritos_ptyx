@@ -227,16 +227,16 @@ class ShipSpeedPredictorModel:
 
                 # Update progress bar with current losses
                 progress_bar.set_postfix({
-                    "Total Loss": f"{running_loss/(batch_index+1):.4f}",
-                    "Data Loss": f"{running_data_loss/(batch_index+1):.4f}",
-                    "PDE Loss": f"{running_pde_loss/(batch_index+1):.4f}",
-                    "Boundary Loss": f"{running_boundary_loss/(batch_index+1):.4f}"
+                    "Total Loss": f"{running_loss/(batch_index+1):.8f}",
+                    "Data Loss": f"{running_data_loss/(batch_index+1):.8f}",
+                    "PDE Loss": f"{running_pde_loss/(batch_index+1):.8f}",
+                    "Boundary Loss": f"{running_boundary_loss/(batch_index+1):.8f}"
                 })
 
-            print(f"Epoch [{epoch+1}/{self.epochs}], Total Loss: {running_loss/total_batches:.4f}, "
-                  f"Data Loss: {running_data_loss/total_batches:.4f}, "
-                  f"PDE Loss: {running_pde_loss/total_batches:.4f}, "
-                  f"Boundary Loss: {running_boundary_loss/total_batches:.4f}")
+            print(f"Epoch [{epoch+1}/{self.epochs}], Total Loss: {running_loss/total_batches:.8f}, "
+                  f"Data Loss: {running_data_loss/total_batches:.8f}, "
+                  f"PDE Loss: {running_pde_loss/total_batches:.8f}, "
+                  f"Boundary Loss: {running_boundary_loss/total_batches:.8f}")
 
     def evaluate(self, X_eval, y_eval, dataset_type="Validation", data_processor=None):
         """Function to evaluate the model on the given dataset (validation or test)."""
@@ -248,7 +248,7 @@ class ShipSpeedPredictorModel:
         with torch.no_grad():
             outputs = self.model(X_eval_tensor)
             loss = loss_function(outputs, y_eval_tensor)
-            print(f"\n{dataset_type} Loss: {loss.item():.4f}")
+            print(f"\n{dataset_type} Loss: {loss.item():.8f}")
 
             if data_processor:
                 # Inverse transform outputs and y_eval to original scale
@@ -257,7 +257,7 @@ class ShipSpeedPredictorModel:
 
                 # Calculate evaluation metrics (e.g., RMSE)
                 rmse = np.sqrt(np.mean((outputs_original - y_eval_original) ** 2))
-                print(f"{dataset_type} RMSE: {rmse:.2f}")
+                print(f"{dataset_type} RMSE: {rmse:.4f}")
 
         return loss.item()
 
@@ -289,7 +289,7 @@ class ShipSpeedPredictorModel:
 
         # Calculate average validation loss across all folds
         avg_val_loss = np.mean(fold_results)
-        print(f"\nCross-validation results: Average Validation Loss = {avg_val_loss:.4f}")
+        print(f"\nCross-validation results: Average Validation Loss = {avg_val_loss:.8f}")
         return avg_val_loss
 
     @staticmethod
@@ -337,7 +337,13 @@ class ShipSpeedPredictorModel:
                 best_loss = avg_val_loss
                 best_params = {'lr': lr, 'batch_size': batch_size}
 
-        print(f"\nBest parameters: {best_params}, with average validation loss: {best_loss:.4f}")
+        print(f"\nBest parameters: {best_params}, with average validation loss: {best_loss:.8f}")
+
+        # Save the best hyperparameters to a text file
+        with open("best_hyperparameters_PINN.txt", "w") as f:
+            f.write(f"Best parameters: {best_params}\n")
+            f.write(f"Best average validation loss: {best_loss:.8f}\n")
+
         return best_params, best_loss
 
 if __name__ == "__main__":
