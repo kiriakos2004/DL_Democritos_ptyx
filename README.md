@@ -71,6 +71,7 @@ In order to check if the equations used at the physical part of loss accurately 
  This script will:
 
 - Use unscaled data from data loader to Calculate the power needed.
+- Use Bayesian optimization to find the best static parameters that are used to calculate Resistance
 - Display in a common diagramm the calculated power and the power specified on the data in order to visualy compare the allingment.
 
 ### Running the Data-Driven Model
