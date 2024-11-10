@@ -299,8 +299,8 @@ if __name__ == "__main__":
 
         # Define hyperparameter grid (search for learning rate and batch size only)
         param_grid = {
-            'lr': [0.001],        # Learning rate values to search
-            'batch_size': [128, 256]      # Batch size values to search
+            'lr': [0.001, 0.01],        # Learning rate values to search
+            'batch_size': [256]      # Batch size values to search
         }
 
         # Manually specify other hyperparameters
