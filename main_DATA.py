@@ -3,12 +3,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, train_test_split
 import numpy as np
 import pandas as pd
 from itertools import product
 from tqdm import tqdm
 from read_data import DataProcessor
+import matplotlib.pyplot as plt
 
 # Custom weight initialization function
 def initialize_weights(model):
@@ -55,7 +56,7 @@ class ShipSpeedPredictorModel:
             return x
 
     def get_device(self):
-        """Function to check if a GPU is available (MPS for Apple Silicon or CUDA for NVIDIA) and return the appropriate device."""
+        """Function to check if a GPU is available and return the appropriate device."""
         if torch.cuda.is_available():
             device = torch.device("cuda")
             print("Using NVIDIA GPU with CUDA")
@@ -100,55 +101,82 @@ class ShipSpeedPredictorModel:
 
         return loader
 
-    def train(self, train_loader):
+    def train(self, train_loader, val_loader=None, live_plot=False):
         """Function to train the model."""
         optimizer = self.get_optimizer()
         loss_function = self.get_loss_function()
+
+        # Lists to store loss values
+        train_losses = []
+        val_losses = []
+
+        # Initialize live plotting if enabled
+        if live_plot:
+            plt.ion()  # Enable interactive mode
+            fig, ax = plt.subplots()
 
         for epoch in range(self.epochs):
             self.model.train()
             running_loss = 0.0
 
-            # Determine the total number of batches
-            total_batches = len(train_loader)
-
             # Progress bar for each epoch
             progress_bar = tqdm(
                 train_loader,
                 desc=f"Epoch {epoch+1}/{self.epochs}",
-                leave=True,
-                total=total_batches
+                leave=False
             )
 
-            for batch_index, (X_batch, y_batch) in enumerate(progress_bar):
+            for X_batch, y_batch in progress_bar:
                 X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
 
-                def closure():
-                    optimizer.zero_grad()  # Zero out the gradients
-                    outputs = self.model(X_batch)  # Forward pass
-                    data_loss = loss_function(outputs, y_batch)  # Compute loss
-                    data_loss.backward()  # Backward pass
-                    return data_loss
-
-                if self.optimizer_choice == 'LBFGS':
-                    optimizer.step(closure)  # For L-BFGS, use the closure
-                    data_loss = closure()  # To get the latest loss for tracking
-                else:
-                    optimizer.zero_grad()
-                    outputs = self.model(X_batch)
-                    data_loss = loss_function(outputs, y_batch)
-                    data_loss.backward()
-                    optimizer.step()
+                optimizer.zero_grad()
+                outputs = self.model(X_batch)
+                data_loss = loss_function(outputs, y_batch)
+                data_loss.backward()
+                optimizer.step()
 
                 # Update running loss
                 running_loss += data_loss.item()
 
-                # Update progress bar with current loss
-                progress_bar.set_postfix({
-                    "Loss": f"{running_loss / total_batches:.8f}"
-                })
+            # Compute average training loss for the epoch
+            avg_train_loss = running_loss / len(train_loader)
+            train_losses.append(avg_train_loss)
 
-            print(f"Epoch [{epoch+1}/{self.epochs}], Loss: {running_loss / total_batches:.8f}")
+            # Compute validation loss if validation data is provided
+            if val_loader is not None:
+                self.model.eval()
+                val_running_loss = 0.0
+                with torch.no_grad():
+                    for X_val_batch, y_val_batch in val_loader:
+                        X_val_batch, y_val_batch = X_val_batch.to(self.device), y_val_batch.to(self.device)
+                        val_outputs = self.model(X_val_batch)
+                        val_loss = loss_function(val_outputs, y_val_batch)
+                        val_running_loss += val_loss.item()
+                avg_val_loss = val_running_loss / len(val_loader)
+                val_losses.append(avg_val_loss)
+                print(f"Epoch [{epoch+1}/{self.epochs}], Training Loss: {avg_train_loss:.8f}, Validation Loss: {avg_val_loss:.8f}")
+            else:
+                val_losses.append(None)
+                print(f"Epoch [{epoch+1}/{self.epochs}], Training Loss: {avg_train_loss:.8f}")
+
+            # Live plotting
+            if live_plot:
+                ax.clear()
+                ax.plot(range(1, epoch+2), train_losses, label='Training Loss')
+                if val_loader is not None:
+                    ax.plot(range(1, epoch+2), val_losses, label='Validation Loss')
+                ax.set_xlabel('Epoch')
+                ax.set_ylabel('Loss')
+                ax.set_title('Training and Validation Loss over Epochs')
+                ax.legend()
+                plt.pause(0.01)  # Pause to update the plot
+
+        # After training, finalize the plot
+        if live_plot:
+            plt.ioff()  # Disable interactive mode
+            plt.show()
+            # Optionally, save the plot
+            fig.savefig('training_validation_loss_plot.png')
 
     def evaluate(self, X_eval, y_eval, dataset_type="Validation", data_processor=None):
         """Function to evaluate the model on the given dataset (validation or test)."""
@@ -182,20 +210,21 @@ class ShipSpeedPredictorModel:
             print(f"\nFold {fold+1}/{k_folds}")
 
             # Split the data into training and validation sets
-            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-            y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+            X_train_fold, X_val_fold = X.iloc[train_idx], X.iloc[val_idx]
+            y_train_fold, y_val_fold = y.iloc[train_idx], y.iloc[val_idx]
 
             # Prepare the data loaders
-            train_loader = self.prepare_dataloader(X_train, y_train)
+            train_loader = self.prepare_dataloader(X_train_fold, y_train_fold)
+            val_loader = self.prepare_dataloader(X_val_fold, y_val_fold)
 
             # Reset model weights for each fold
             self.model.apply(self.reset_weights)
 
-            # Train the model on the training split
-            self.train(train_loader)
+            # Train the model on the training split without live plotting
+            self.train(train_loader, val_loader=val_loader, live_plot=False)
 
             # Evaluate the model on the validation split
-            val_loss = self.evaluate(X_val, y_val, dataset_type="Validation", data_processor=data_processor)
+            val_loss = self.evaluate(X_val_fold, y_val_fold, dataset_type="Validation", data_processor=data_processor)
             fold_results.append(val_loss)
 
         # Calculate average validation loss across all folds
@@ -210,7 +239,7 @@ class ShipSpeedPredictorModel:
             m.reset_parameters()
 
     @staticmethod
-    def hyperparameter_search(X_train, y_train, param_grid, epochs, optimizer, loss_function, data_processor, k_folds=5):
+    def hyperparameter_search(X_train, y_train, param_grid, epochs_cv, optimizer, loss_function, data_processor, k_folds=5):
         """Function to perform hyperparameter search with cross-validation."""
         best_params = None
         best_loss = float('inf')
@@ -228,7 +257,7 @@ class ShipSpeedPredictorModel:
             model = ShipSpeedPredictorModel(
                 input_size=X_train.shape[1],
                 lr=lr,
-                epochs=epochs,
+                epochs=epochs_cv,  # Use epochs for cross-validation
                 optimizer_choice=optimizer,
                 loss_function_choice=loss_function,
                 batch_size=batch_size
@@ -246,7 +275,7 @@ class ShipSpeedPredictorModel:
 
         print(f"\nBest parameters: {best_params}, with average validation loss: {best_loss:.8f}")
 
-        # Add the following lines to save the best hyperparameters to a text file
+        # Save the best hyperparameters to a text file
         with open("best_hyperparameters_DATA.txt", "w") as f:
             f.write(f"Best parameters: {best_params}\n")
             f.write(f"Best average validation loss: {best_loss:.8f}\n")
@@ -275,30 +304,37 @@ if __name__ == "__main__":
         }
 
         # Manually specify other hyperparameters
-        epochs = 100
+        epochs_cv = 50     # Number of epochs during cross-validation
+        epochs_final = 200  # Number of epochs during final training
         optimizer = 'Adam'
         loss_function = 'MSE'
 
         # Perform hyperparameter search with cross-validation
         best_params, best_loss = ShipSpeedPredictorModel.hyperparameter_search(
-            X_train, y_train, param_grid, epochs, optimizer, loss_function, data_processor, k_folds=5
+            X_train, y_train, param_grid, epochs_cv, optimizer, loss_function, data_processor, k_folds=5
+        )
+
+        # Split X_train and y_train into training and validation sets for final training
+        X_train_final, X_val_final, y_train_final, y_val_final = train_test_split(
+            X_train, y_train, test_size=0.2, random_state=42
         )
 
         # Train the final model with the best hyperparameters
         final_model = ShipSpeedPredictorModel(
             input_size=X_train.shape[1],
             lr=best_params['lr'],                    # Best learning rate
-            epochs=epochs,                           # Manually specified
+            epochs=epochs_final,                     # Number of epochs for final training
             optimizer_choice=optimizer,              # Manually specified
             loss_function_choice=loss_function,      # Manually specified
             batch_size=best_params['batch_size']     # Best batch size
         )
 
         # Prepare the data loaders for the final model
-        final_train_loader = final_model.prepare_dataloader(X_train, y_train)
+        final_train_loader = final_model.prepare_dataloader(X_train_final, y_train_final)
+        final_val_loader = final_model.prepare_dataloader(X_val_final, y_val_final)
 
-        # Train the final model on the entire training set
-        final_model.train(final_train_loader)
+        # Train the final model on the training set, with validation data and live plotting enabled
+        final_model.train(final_train_loader, val_loader=final_val_loader, live_plot=True)
 
         # Evaluate the final model on the test set (after hyperparameter tuning)
         final_model.evaluate(X_test, y_test, dataset_type="Test", data_processor=data_processor)

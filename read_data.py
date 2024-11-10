@@ -4,13 +4,16 @@ from sklearn.preprocessing import StandardScaler
 
 class DataProcessor:
     def __init__(
-        self, file_path, target_column, drop_columns=None, test_size=0.2, random_state=42
+        self, file_path, target_column, drop_columns=None, test_size=0.2, random_state=42,
+        fill_missing_with_median=True, exclude_missing_Hs=True
     ):
         self.file_path = file_path
         self.target_column = target_column
         self.drop_columns = drop_columns
         self.test_size = test_size
         self.random_state = random_state
+        self.fill_missing_with_median = fill_missing_with_median  # New parameter
+        self.exclude_missing_Hs = exclude_missing_Hs  # New parameter
         self.scaler_X = StandardScaler()
         self.scaler_y = StandardScaler()
         self.df = None  # Initialize the DataFrame attribute
@@ -39,6 +42,16 @@ class DataProcessor:
             print(f"Error: Target column '{self.target_column}' not found in the dataset.")
             return None
 
+        # Optionally exclude rows with missing H_s values
+        if self.exclude_missing_Hs:
+            if 'SG_Significant_Wave_Height' in self.df.columns:
+                initial_row_count = len(self.df)
+                self.df = self.df.dropna(subset=['SG_Significant_Wave_Height'])
+                rows_dropped = initial_row_count - len(self.df)
+                print(f"Dropped {rows_dropped} rows due to missing 'SG_Significant_Wave_Height'")
+            else:
+                print("Warning: 'SG_Significant_Wave_Height' column not found in the dataset.")
+
         # Drop rows where 'Power' is less than 1000
         self.df = self.df[self.df['Power'] >= 1000]
 
@@ -47,7 +60,12 @@ class DataProcessor:
 
         # Check for missing values and fill them
         numeric_cols = self.df.select_dtypes(include=['float64', 'int64']).columns
-        self.df[numeric_cols] = self.df[numeric_cols].fillna(self.df[numeric_cols].mean())
+
+        # Fill missing values with median or mean
+        if self.fill_missing_with_median:
+            self.df[numeric_cols] = self.df[numeric_cols].fillna(self.df[numeric_cols].median())
+        else:
+            self.df[numeric_cols] = self.df[numeric_cols].fillna(self.df[numeric_cols].mean())
 
         # Split the data into features (X) and target (y)
         X = self.df.drop(self.target_column, axis=1)  # Features
@@ -135,8 +153,14 @@ if __name__ == "__main__":
     target_column = 'Power'  # Update with your actual target column
     drop_columns = ['TIME']  # Update with columns you wish to drop
 
-    # Initialize DataProcessor
-    data_processor = DataProcessor(file_path, target_column, drop_columns)
+    # Initialize DataProcessor with new parameters
+    data_processor = DataProcessor(
+        file_path,
+        target_column,
+        drop_columns,
+        fill_missing_with_median=True,   # Set to True to fill missing values with median
+        exclude_missing_Hs=True          # Set to True to exclude rows with missing H_s
+    )
 
     # Load and prepare data
     result = data_processor.load_and_prepare_data()
