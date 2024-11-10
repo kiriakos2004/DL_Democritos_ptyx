@@ -78,6 +78,8 @@ class ShipSpeedPredictorModel:
             return optim.SGD(self.model.parameters(), lr=self.lr, momentum=0.9)
         elif self.optimizer_choice == 'RMSprop':
             return optim.RMSprop(self.model.parameters(), lr=self.lr)
+        elif self.optimizer_choice == 'LBFGS':
+            return optim.LBFGS(self.model.parameters(), lr=self.lr, max_iter=20, history_size=10, line_search_fn="strong_wolfe")
         else:
             raise ValueError(f"Optimizer {self.optimizer_choice} not recognized.")
 
@@ -90,29 +92,37 @@ class ShipSpeedPredictorModel:
         else:
             raise ValueError(f"Loss function {self.loss_function_choice} not recognized.")
 
-    def prepare_dataloader(self, X_train, y_train):
-        """Function to prepare the DataLoader from training data and move tensors to the device."""
-        X_train_tensor = torch.tensor(X_train.values, dtype=torch.float32).to(self.device)
-        y_train_tensor = torch.tensor(y_train.values, dtype=torch.float32).view(-1, 1).to(self.device)
+    def prepare_dataloader(self, X, y):
+        """Function to prepare the DataLoader from data and move tensors to the device."""
+        X_tensor = torch.tensor(X.values, dtype=torch.float32).to(self.device)
+        y_tensor = torch.tensor(y.values, dtype=torch.float32).view(-1, 1).to(self.device)
+
+        # Adjust batch size for LBFGS optimizer
+        if self.optimizer_choice == 'LBFGS':
+            batch_size = len(X)
+            shuffle = False  # No shuffling for full-batch optimizer
+        else:
+            batch_size = self.batch_size
+            shuffle = True
 
         # Create DataLoader for batching
-        train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=0)  # Set num_workers=0 for Windows
+        dataset = TensorDataset(X_tensor, y_tensor)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=0)
 
-        return train_loader
+        return loader
 
     def sample_collocation_points(self, num_points, X_train_unscaled, data_processor):
         """Function to sample collocation points within the domain of input features."""
         # Get min and max values from unscaled data
         x_min = X_train_unscaled.min()
         x_max = X_train_unscaled.max()
-        
+
         # Generate random samples within the range of each feature
         x_collocation_unscaled = pd.DataFrame({
             col: np.random.uniform(low=x_min[col], high=x_max[col], size=num_points)
             for col in X_train_unscaled.columns
         })
-        
+
         # Scale the collocation points using the same scaler as the training data
         x_collocation_scaled = data_processor.scaler_X.transform(x_collocation_unscaled)
         x_collocation = torch.tensor(x_collocation_scaled, dtype=torch.float32, device=self.device)
@@ -124,19 +134,19 @@ class ShipSpeedPredictorModel:
         # Get min and max values from unscaled data
         x_min = X_train_unscaled.min()
         x_max = X_train_unscaled.max()
-        
+
         # Initialize a DataFrame to hold unscaled boundary points
         x_boundary_unscaled = pd.DataFrame(columns=X_train_unscaled.columns)
-        
+
         # Set 'Speed-Through-Water' to zero
         V_col = X_train_unscaled.columns[feature_indices['Speed-Through-Water']]
         x_boundary_unscaled[V_col] = np.zeros(num_points)
-        
+
         # For other features, sample within their min and max range
         for col in X_train_unscaled.columns:
             if col != V_col:
                 x_boundary_unscaled[col] = np.random.uniform(low=x_min[col], high=x_max[col], size=num_points)
-        
+
         # Scale the boundary points
         x_boundary_scaled = data_processor.scaler_X.transform(x_boundary_unscaled)
         x_boundary = torch.tensor(x_boundary_scaled, dtype=torch.float32, device=self.device)
@@ -187,56 +197,106 @@ class ShipSpeedPredictorModel:
             running_pde_loss = 0.0
             running_boundary_loss = 0.0
 
-            total_batches = len(train_loader)
+            if self.optimizer_choice == 'LBFGS':
+                # For LBFGS, process the entire dataset as a single batch
+                X_batch, y_batch = train_loader.dataset.tensors
 
-            progress_bar = tqdm(
-                enumerate(train_loader),
-                desc=f"Epoch {epoch+1}/{self.epochs}",
-                leave=True,
-                total=total_batches
-            )
+                def closure():
+                    optimizer.zero_grad()
 
-            for batch_index, (X_batch, y_batch) in progress_bar:
-                optimizer.zero_grad()  # Zero out the gradients
+                    # Data-driven loss
+                    outputs = self.model(X_batch)
+                    data_loss = loss_function(outputs, y_batch)
 
-                # Data-driven loss
-                outputs = self.model(X_batch)
-                data_loss = loss_function(outputs, y_batch)
+                    # Sample collocation points for PDE residuals
+                    x_collocation = self.sample_collocation_points(len(X_batch), X_train_unscaled, data_processor)
+                    pde_residual = self.compute_pde_residual(x_collocation, feature_indices)
+                    pde_loss = torch.mean(pde_residual**2)
 
-                # Sample collocation points for PDE residuals
-                x_collocation = self.sample_collocation_points(self.batch_size, X_train_unscaled, data_processor)
-                pde_residual = self.compute_pde_residual(x_collocation, feature_indices)
-                pde_loss = torch.mean(pde_residual**2)
+                    # Sample boundary points for boundary condition loss
+                    x_boundary = self.sample_boundary_points(len(X_batch), X_train_unscaled, feature_indices, data_processor)
+                    boundary_loss = self.compute_boundary_loss(x_boundary)
 
-                # Sample boundary points for boundary condition loss
-                x_boundary = self.sample_boundary_points(self.batch_size, X_train_unscaled, feature_indices, data_processor)
-                boundary_loss = self.compute_boundary_loss(x_boundary)
+                    # Combine losses
+                    total_loss = self.alpha * data_loss + self.beta * pde_loss + self.gamma * boundary_loss
 
-                # Combine losses
-                total_loss = self.alpha * data_loss + self.beta * pde_loss + self.gamma * boundary_loss
+                    # Backward pass
+                    total_loss.backward()
+                    return total_loss
 
-                # Backward pass and optimization
-                total_loss.backward()
-                optimizer.step()
+                optimizer.step(closure)
+                total_loss = closure()
+                running_loss = total_loss.item()
+                running_data_loss = (self.alpha * loss_function(self.model(X_batch), y_batch)).item()
+                running_pde_loss = (self.beta * torch.mean(self.compute_pde_residual(
+                    self.sample_collocation_points(len(X_batch), X_train_unscaled, data_processor), feature_indices
+                )**2)).item()
+                running_boundary_loss = (self.gamma * self.compute_boundary_loss(
+                    self.sample_boundary_points(len(X_batch), X_train_unscaled, feature_indices, data_processor)
+                )).item()
 
-                # Update running losses
-                running_loss += total_loss.item()
-                running_data_loss += data_loss.item()
-                running_pde_loss += pde_loss.item()
-                running_boundary_loss += boundary_loss.item()
-
-                # Update progress bar with current losses
+                # Update progress bar
+                progress_bar = tqdm(total=1, desc=f"Epoch {epoch+1}/{self.epochs}", leave=True)
                 progress_bar.set_postfix({
-                    "Total Loss": f"{running_loss/(batch_index+1):.8f}",
-                    "Data Loss": f"{running_data_loss/(batch_index+1):.8f}",
-                    "PDE Loss": f"{running_pde_loss/(batch_index+1):.8f}",
-                    "Boundary Loss": f"{running_boundary_loss/(batch_index+1):.8f}"
+                    "Total Loss": f"{running_loss:.8f}",
+                    "Data Loss": f"{running_data_loss:.8f}",
+                    "PDE Loss": f"{running_pde_loss:.8f}",
+                    "Boundary Loss": f"{running_boundary_loss:.8f}"
                 })
+                progress_bar.update(1)
+                progress_bar.close()
 
-            print(f"Epoch [{epoch+1}/{self.epochs}], Total Loss: {running_loss/total_batches:.8f}, "
-                  f"Data Loss: {running_data_loss/total_batches:.8f}, "
-                  f"PDE Loss: {running_pde_loss/total_batches:.8f}, "
-                  f"Boundary Loss: {running_boundary_loss/total_batches:.8f}")
+            else:
+                total_batches = len(train_loader)
+
+                progress_bar = tqdm(
+                    enumerate(train_loader),
+                    desc=f"Epoch {epoch+1}/{self.epochs}",
+                    leave=True,
+                    total=total_batches
+                )
+
+                for batch_index, (X_batch, y_batch) in progress_bar:
+                    optimizer.zero_grad()  # Zero out the gradients
+
+                    # Data-driven loss
+                    outputs = self.model(X_batch)
+                    data_loss = loss_function(outputs, y_batch)
+
+                    # Sample collocation points for PDE residuals
+                    x_collocation = self.sample_collocation_points(self.batch_size, X_train_unscaled, data_processor)
+                    pde_residual = self.compute_pde_residual(x_collocation, feature_indices)
+                    pde_loss = torch.mean(pde_residual**2)
+
+                    # Sample boundary points for boundary condition loss
+                    x_boundary = self.sample_boundary_points(self.batch_size, X_train_unscaled, feature_indices, data_processor)
+                    boundary_loss = self.compute_boundary_loss(x_boundary)
+
+                    # Combine losses
+                    total_loss = self.alpha * data_loss + self.beta * pde_loss + self.gamma * boundary_loss
+
+                    # Backward pass and optimization
+                    total_loss.backward()
+                    optimizer.step()
+
+                    # Update running losses
+                    running_loss += total_loss.item()
+                    running_data_loss += data_loss.item()
+                    running_pde_loss += pde_loss.item()
+                    running_boundary_loss += boundary_loss.item()
+
+                    # Update progress bar with current losses
+                    progress_bar.set_postfix({
+                        "Total Loss": f"{running_loss / (batch_index + 1):.8f}",
+                        "Data Loss": f"{running_data_loss / (batch_index + 1):.8f}",
+                        "PDE Loss": f"{running_pde_loss / (batch_index + 1):.8f}",
+                        "Boundary Loss": f"{running_boundary_loss / (batch_index + 1):.8f}"
+                    })
+
+                print(f"Epoch [{epoch+1}/{self.epochs}], Total Loss: {running_loss / total_batches:.8f}, "
+                      f"Data Loss: {running_data_loss / total_batches:.8f}, "
+                      f"PDE Loss: {running_pde_loss / total_batches:.8f}, "
+                      f"Boundary Loss: {running_boundary_loss / total_batches:.8f}")
 
     def evaluate(self, X_eval, y_eval, dataset_type="Validation", data_processor=None):
         """Function to evaluate the model on the given dataset (validation or test)."""
@@ -270,21 +330,21 @@ class ShipSpeedPredictorModel:
             print(f"\nFold {fold+1}/{k_folds}")
 
             # Split the data into training and validation sets
-            X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-            X_train_unscaled, X_val_unscaled = X_unscaled.iloc[train_idx], X_unscaled.iloc[val_idx]
-            y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+            X_train_fold, X_val_fold = X.iloc[train_idx], X.iloc[val_idx]
+            X_train_unscaled_fold, X_val_unscaled_fold = X_unscaled.iloc[train_idx], X_unscaled.iloc[val_idx]
+            y_train_fold, y_val_fold = y.iloc[train_idx], y.iloc[val_idx]
 
             # Prepare the data loaders
-            train_loader = self.prepare_dataloader(X_train, y_train)
+            train_loader = self.prepare_dataloader(X_train_fold, y_train_fold)
 
             # Reset model weights for each fold
             self.model.apply(self.reset_weights)
 
             # Train the model on the training split
-            self.train(train_loader, X_train_unscaled, feature_indices, data_processor)
+            self.train(train_loader, X_train_unscaled_fold, feature_indices, data_processor)
 
             # Evaluate the model on the validation split
-            val_loss = self.evaluate(X_val, y_val, dataset_type="Validation", data_processor=data_processor)
+            val_loss = self.evaluate(X_val_fold, y_val_fold, dataset_type="Validation", data_processor=data_processor)
             fold_results.append(val_loss)
 
         # Calculate average validation loss across all folds
@@ -377,12 +437,12 @@ if __name__ == "__main__":
         # Define hyperparameter grid (search for learning rate and batch size only)
         param_grid = {
             'lr': [0.001, 0.01],        # Learning rate values to search
-            'batch_size': [32, 64]      # Batch size values to search
+            'batch_size': [64, 128]      # Batch size values to search
         }
 
         # Manually specify other hyperparameters
         epochs = 8
-        optimizer = 'Adam'
+        optimizer = 'Adam'  # You can also set this to 'LBFGS'
         loss_function = 'MSE'
         alpha = 0.8   # Weight for data loss
         beta = 0.1    # Weight for PDE loss
