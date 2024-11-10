@@ -127,9 +127,10 @@ Where:
 
 ## Physics-Based Loss Function
 
-The PINN incorporates a physics-based loss term calculated using ship resistance equations:
+The PGNN incorporates a physics-based loss term calculated using ship resistance equations:
 
 - Frictional Resistance
+
 - Wave-Making Resistance
 - Appendage Resistance
 - Transom Stern Resistance
@@ -141,12 +142,7 @@ The physics-based loss is computed as the squared difference between the predict
 
 ## Hyperparameter Tuning
 
-Both models perform hyperparameter tuning over:
-
-- Learning Rate: [0.001, 0.01]
-- Batch Size: [32, 64]
-
-Using k-fold cross-validation (default is 5 folds).
+Both models perform hyperparameter tuning a predifined Hyperparameter Grid using k-fold cross-validation (default is 5 folds).
 
 ## Results
 
