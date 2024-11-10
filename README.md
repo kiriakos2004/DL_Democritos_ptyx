@@ -130,13 +130,50 @@ Where:
 The PGNN incorporates a physics-based loss term calculated using ship resistance equations:
 
 - Frictional Resistance
+  
+![image](https://github.com/user-attachments/assets/7ff9b3d1-fb57-4cf5-a885-3f4148322d84)
 
+It is calculated using the ITTC-1957 formula, the frictional resistance coefficient accounts for the friction between the ship's hull and the water.
+  
 - Wave-Making Resistance
+
+  ![image](https://github.com/user-attachments/assets/5dbf4b12-984d-4e44-8a36-ad1290fcdb90)
+
+Wave-making resistance is caused by the energy lost in generating waves as the ship moves through the water. It is influenced by the ship's speed and trim.
+  
 - Appendage Resistance
+
+![image](https://github.com/user-attachments/assets/99d428c4-6b61-4697-9a93-ebfde8f9ca95)
+
+Appendage resistance accounts for the additional resistance from appendages such as rudders, shafts, and propellers.
+
 - Transom Stern Resistance
+
+![image](https://github.com/user-attachments/assets/9e77f536-ec0c-488f-a6fb-bb5ce40776f0)
+
+Transom stern resistance is significant for ships with a flat stern (transom) and is calculated using the transom Froude number.
+
 - Correlation Allowance Resistance
 
-The physics-based loss is computed as the squared difference between the predicted power and the power calculated using the total resistance and propulsive efficiency:
+![image](https://github.com/user-attachments/assets/21007a57-e06d-407b-8fb2-d0b841bcad94)
+
+This is an empirical correction factor to account for additional resistance not captured by other components.
+
+- Added Resistance due to waves
+
+![image](https://github.com/user-attachments/assets/c84ba982-d45f-4eed-af88-1195b8d277b1)
+
+Where: 
+
+![image](https://github.com/user-attachments/assets/7ff1d96c-18eb-426d-8bfe-3e72edc4a105)
+
+and:
+
+![image](https://github.com/user-attachments/assets/dd9a3f4d-2fb0-4d84-875e-ce887a87d553)
+
+![image](https://github.com/user-attachments/assets/13c194a4-48f0-4dc9-b7f7-1bd48662a21c)
+
+Finally the physics-based loss is computed as the squared difference between the predicted power and the power calculated using the total resistance and propulsive efficiency:
 
 ![Screenshot_2](https://github.com/user-attachments/assets/88e88f14-73b3-4232-92ed-693ce98a8c87)
 
