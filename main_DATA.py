@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from itertools import product
 from tqdm import tqdm
-from read_data import DataProcessor
+from read_data_old import DataProcessor
 import matplotlib.pyplot as plt
 
 # Custom weight initialization function

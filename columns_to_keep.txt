@@ -1,0 +1,7 @@
+Speed-Through-Water
+True_Heading
+Draft_Fore
+Draft_Aft
+Power
+Significant_Wave_Height
+Mean_Wave_Direction

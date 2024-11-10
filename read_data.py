@@ -4,16 +4,16 @@ from sklearn.preprocessing import StandardScaler
 
 class DataProcessor:
     def __init__(
-        self, file_path, target_column, drop_columns=None, test_size=0.2, random_state=42,
+        self, file_path, target_column, keep_columns_file, test_size=0.2, random_state=42,
         fill_missing_with_median=True, exclude_missing_Hs=True
     ):
         self.file_path = file_path
         self.target_column = target_column
-        self.drop_columns = drop_columns
+        self.keep_columns_file = keep_columns_file  # New parameter: path to the text file
         self.test_size = test_size
         self.random_state = random_state
-        self.fill_missing_with_median = fill_missing_with_median  # New parameter
-        self.exclude_missing_Hs = exclude_missing_Hs  # New parameter
+        self.fill_missing_with_median = fill_missing_with_median  # Existing parameter
+        self.exclude_missing_Hs = exclude_missing_Hs  # Existing parameter
         self.scaler_X = StandardScaler()
         self.scaler_y = StandardScaler()
         self.df = None  # Initialize the DataFrame attribute
@@ -29,14 +29,30 @@ class DataProcessor:
             print(f"An error occurred while reading the file: {e}")
             return None
 
-        # Drop specified columns, if provided
-        if self.drop_columns is not None:
-            for col in self.drop_columns:
-                if col in self.df.columns:
-                    self.df.drop(columns=col, inplace=True)
-                else:
-                    print(f"Warning: Column '{col}' not found in the dataset.")
+        # Read the columns to keep from the text file
+        try:
+            with open(self.keep_columns_file, 'r') as f:
+                columns_to_keep = [line.strip() for line in f if line.strip()]
+        except FileNotFoundError:
+            print(f"Columns file not found: {self.keep_columns_file}")
+            return None
+        except Exception as e:
+            print(f"An error occurred while reading the columns file: {e}")
+            return None
 
+        # Ensure the target column is included in the columns to keep
+        if self.target_column not in columns_to_keep:
+            columns_to_keep.append(self.target_column)
+
+        # Filter the DataFrame to keep only the specified columns
+        missing_columns = [col for col in columns_to_keep if col not in self.df.columns]
+        if missing_columns:
+            print(f"Error: The following columns specified in the columns file are not in the dataset: {missing_columns}")
+            return None
+
+        self.df = self.df[columns_to_keep]
+
+        # Proceed with data preparation as before
         # Ensure the target column exists
         if self.target_column not in self.df.columns:
             print(f"Error: Target column '{self.target_column}' not found in the dataset.")
@@ -56,7 +72,10 @@ class DataProcessor:
         self.df = self.df[self.df['Power'] >= 1000]
 
         # Drop rows where 'Speed-Through-Water' is less than 4 knots
-        self.df = self.df[self.df['Speed-Through-Water'] >= 4]
+        if 'Speed-Through-Water' in self.df.columns:
+            self.df = self.df[self.df['Speed-Through-Water'] >= 4]
+        else:
+            print("Warning: 'Speed-Through-Water' column not found in the dataset.")
 
         # Check for missing values and fill them
         numeric_cols = self.df.select_dtypes(include=['float64', 'int64']).columns
@@ -71,7 +90,7 @@ class DataProcessor:
         X = self.df.drop(self.target_column, axis=1)  # Features
         y = self.df[[self.target_column]]  # Target (as DataFrame for scaling)
 
-        # Keep a copy of unscaled features and target for physics-based loss calculations
+        # Keep a copy of unscaled features and target
         X_unscaled = X.copy()
         y_unscaled = y.copy()
 
@@ -117,18 +136,22 @@ class DataProcessor:
     def print_dataset_head(self, X_train, X_test):
         # Print the first few rows of X_train and X_test
         print("First few rows of training features (X_train):")
-        print(X_train.head())  # X_train is a DataFrame now
+        print(X_train.head())
 
         print("\nFirst few rows of test features (X_test):")
-        print(X_test.head())  # X_test is a DataFrame now
+        print(X_test.head())
 
     def list_column_names(self):
         # Ensure the DataFrame is loaded
         if self.df is None:
             try:
                 self.df = pd.read_csv(self.file_path)
-                if self.drop_columns is not None:
-                    self.df.drop(columns=self.drop_columns, inplace=True)
+                # Read the columns to keep from the text file
+                with open(self.keep_columns_file, 'r') as f:
+                    columns_to_keep = [line.strip() for line in f if line.strip()]
+                if self.target_column not in columns_to_keep:
+                    columns_to_keep.append(self.target_column)
+                self.df = self.df[columns_to_keep]
             except FileNotFoundError:
                 print(f"File not found: {self.file_path}")
                 return None
@@ -141,7 +164,7 @@ class DataProcessor:
         print("Column names:")
         for col in columns:
             print(col)
-        return columns  # Optional: return the list of column names
+        return columns
 
     def inverse_transform_y(self, y_scaled):
         # Inverse transform the scaled target variable
@@ -150,14 +173,14 @@ class DataProcessor:
 if __name__ == "__main__":
     # Example usage of DataProcessor when run independently
     file_path = 'data/Aframax/P data_20200213-20200726_Democritos.csv'  # Update with your actual file path
-    target_column = 'Power'  # Update with your actual target column
-    drop_columns = ['TIME']  # Update with columns you wish to drop
+    target_column = 'Power'  # The target column is always 'Power'
+    keep_columns_file = 'columns_to_keep.txt'  # Path to the text file with columns to keep
 
-    # Initialize DataProcessor with new parameters
+    # Initialize DataProcessor with the new parameter
     data_processor = DataProcessor(
         file_path,
         target_column,
-        drop_columns,
+        keep_columns_file=keep_columns_file,
         fill_missing_with_median=True,   # Set to True to fill missing values with median
         exclude_missing_Hs=True          # Set to True to exclude rows with missing H_s
     )
@@ -172,4 +195,4 @@ if __name__ == "__main__":
         # data_processor.print_dataset_head(X_train, X_test)
 
         # List all column names
-        # data_processor.list_column_names()
+        data_processor.list_column_names()
