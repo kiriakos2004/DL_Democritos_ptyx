@@ -9,11 +9,12 @@ import pandas as pd
 from itertools import product
 from tqdm import tqdm
 from read_data import DataProcessor
+import matplotlib
 import matplotlib.pyplot as plt
 
 # Custom weight initialization function
 def initialize_weights(model):
-    """Function to customly initialize weights for consistent comparison."""
+    """Custom weight initialization for consistent comparison."""
     for layer in model.modules():
         if isinstance(layer, nn.Linear):
             # Use Kaiming uniform initialization for the linear layers
@@ -22,7 +23,7 @@ def initialize_weights(model):
                 nn.init.zeros_(layer.bias)
 
 class ShipSpeedPredictorModel:
-    def __init__(self, input_size, lr=0.001, epochs=100, batch_size=32,
+    def __init__(self, input_size, lr=0.001, epochs=100, batch_size=256,
                  optimizer_choice='Adam', loss_function_choice='MSE'):
         self.lr = lr  # Part of hyperparameter search
         self.epochs = epochs  # Manually specified
@@ -41,22 +42,24 @@ class ShipSpeedPredictorModel:
     class ShipSpeedPredictor(nn.Module):
         def __init__(self, input_size):
             super().__init__()
-            self.fc1 = nn.Linear(input_size, 128)
-            self.fc2 = nn.Linear(128, 64)
-            self.fc3 = nn.Linear(64, 32)
-            self.fc4 = nn.Linear(32, 16)
-            self.fc5 = nn.Linear(16, 1)
+            self.fc1 = nn.Linear(input_size, 512)
+            self.fc2 = nn.Linear(512, 256)
+            self.fc3 = nn.Linear(256, 128)
+            self.fc4 = nn.Linear(128, 64)
+            self.fc5 = nn.Linear(64, 32)
+            self.fc6 = nn.Linear(32, 1)
 
         def forward(self, x):
             x = torch.relu(self.fc1(x))
             x = torch.relu(self.fc2(x))
             x = torch.relu(self.fc3(x))
             x = torch.relu(self.fc4(x))
-            x = self.fc5(x)
+            x = torch.relu(self.fc5(x))
+            x = self.fc6(x)
             return x
 
     def get_device(self):
-        """Function to check if a GPU is available and return the appropriate device."""
+        """Check if a GPU is available and return the appropriate device."""
         if torch.cuda.is_available():
             device = torch.device("cuda")
             print("Using NVIDIA GPU with CUDA")
@@ -69,7 +72,7 @@ class ShipSpeedPredictorModel:
         return device
 
     def get_optimizer(self):
-        """Function to get the optimizer based on user choice."""
+        """Get the optimizer based on user choice."""
         if self.optimizer_choice == 'Adam':
             return optim.Adam(self.model.parameters(), lr=self.lr)
         elif self.optimizer_choice == 'SGD':
@@ -77,12 +80,13 @@ class ShipSpeedPredictorModel:
         elif self.optimizer_choice == 'RMSprop':
             return optim.RMSprop(self.model.parameters(), lr=self.lr)
         elif self.optimizer_choice == 'LBFGS':
-            return optim.LBFGS(self.model.parameters(), lr=self.lr, max_iter=500, history_size=10, line_search_fn="strong_wolfe")
+            return optim.LBFGS(self.model.parameters(), lr=self.lr, max_iter=500,
+                               history_size=10, line_search_fn="strong_wolfe")
         else:
             raise ValueError(f"Optimizer {self.optimizer_choice} not recognized.")
 
     def get_loss_function(self):
-        """Function to get the loss function based on user choice."""
+        """Get the loss function based on user choice."""
         if self.loss_function_choice == 'MSE':
             return nn.MSELoss()
         elif self.loss_function_choice == 'MAE':
@@ -91,24 +95,34 @@ class ShipSpeedPredictorModel:
             raise ValueError(f"Loss function {self.loss_function_choice} not recognized.")
 
     def prepare_dataloader(self, X, y):
-        """Function to prepare the DataLoader from data and move tensors to the device."""
-        X_tensor = torch.tensor(X.values, dtype=torch.float32).to(self.device)
-        y_tensor = torch.tensor(y.values, dtype=torch.float32).view(-1, 1).to(self.device)
+        """Prepare the DataLoader from data."""
+        X_tensor = torch.tensor(X.values, dtype=torch.float32)
+        y_tensor = torch.tensor(y.values, dtype=torch.float32).view(-1, 1)
 
         # Create DataLoader for batching
         dataset = TensorDataset(X_tensor, y_tensor)
-        loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False, num_workers=0, pin_memory=True)
+        loader = DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=4,       # Adjust based on your CPU cores
+            pin_memory=True
+        )
 
         return loader
 
     def train(self, train_loader, val_loader=None, live_plot=False):
-        """Function to train the model."""
+        """Train the model."""
         optimizer = self.get_optimizer()
         loss_function = self.get_loss_function()
 
         # Lists to store loss values
         train_losses = []
         val_losses = []
+
+        # Switch to non-interactive backend if not live plotting
+        if not live_plot:
+            matplotlib.use('Agg')
 
         # Initialize live plotting if enabled
         if live_plot:
@@ -127,7 +141,8 @@ class ShipSpeedPredictorModel:
             )
 
             for X_batch, y_batch in progress_bar:
-                X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
+                X_batch = X_batch.to(self.device, non_blocking=True)
+                y_batch = y_batch.to(self.device, non_blocking=True)
 
                 optimizer.zero_grad()
                 outputs = self.model(X_batch)
@@ -148,7 +163,8 @@ class ShipSpeedPredictorModel:
                 val_running_loss = 0.0
                 with torch.no_grad():
                     for X_val_batch, y_val_batch in val_loader:
-                        X_val_batch, y_val_batch = X_val_batch.to(self.device), y_val_batch.to(self.device)
+                        X_val_batch = X_val_batch.to(self.device, non_blocking=True)
+                        y_val_batch = y_val_batch.to(self.device, non_blocking=True)
                         val_outputs = self.model(X_val_batch)
                         val_loss = loss_function(val_outputs, y_val_batch)
                         val_running_loss += val_loss.item()
@@ -179,14 +195,16 @@ class ShipSpeedPredictorModel:
             fig.savefig('training_validation_loss_plot.png')
 
     def evaluate(self, X_eval, y_eval, dataset_type="Validation", data_processor=None):
-        """Function to evaluate the model on the given dataset (validation or test)."""
+        """Evaluate the model on the given dataset (validation or test)."""
         self.model.eval()  # Set the model to evaluation mode
-        X_eval_tensor = torch.tensor(X_eval.values, dtype=torch.float32).to(self.device)
-        y_eval_tensor = torch.tensor(y_eval.values, dtype=torch.float32).view(-1, 1).to(self.device)
+        X_eval_tensor = torch.tensor(X_eval.values, dtype=torch.float32)
+        y_eval_tensor = torch.tensor(y_eval.values, dtype=torch.float32).view(-1, 1)
 
-        loss_function = self.get_loss_function()
         with torch.no_grad():
+            X_eval_tensor = X_eval_tensor.to(self.device, non_blocking=True)
+            y_eval_tensor = y_eval_tensor.to(self.device, non_blocking=True)
             outputs = self.model(X_eval_tensor)
+            loss_function = self.get_loss_function()
             loss = loss_function(outputs, y_eval_tensor)
             print(f"\n{dataset_type} Loss: {loss.item():.8f}")
 
@@ -202,7 +220,7 @@ class ShipSpeedPredictorModel:
         return loss.item()
 
     def cross_validate(self, X, y, data_processor, k_folds=5):
-        """Function to perform cross-validation on the model using training and validation data."""
+        """Perform cross-validation on the model using training and validation data."""
         kfold = KFold(n_splits=k_folds, shuffle=True, random_state=42)
         fold_results = []
 
@@ -234,13 +252,13 @@ class ShipSpeedPredictorModel:
 
     @staticmethod
     def reset_weights(m):
-        """Function to reset weights of the neural network for each fold."""
+        """Reset weights of the neural network for each fold."""
         if isinstance(m, nn.Linear):
             m.reset_parameters()
 
     @staticmethod
     def hyperparameter_search(X_train, y_train, param_grid, epochs_cv, optimizer, loss_function, data_processor, k_folds=5):
-        """Function to perform hyperparameter search with cross-validation."""
+        """Perform hyperparameter search with cross-validation."""
         best_params = None
         best_loss = float('inf')
 
@@ -299,8 +317,8 @@ if __name__ == "__main__":
 
         # Define hyperparameter grid (search for learning rate and batch size only)
         param_grid = {
-            'lr': [0.001],        # Learning rate values to search
-            'batch_size': [128, 256]      # Batch size values to search
+            'lr': [0.001, 0.01],
+            'batch_size': [256, 512]  # Try larger batch sizes
         }
 
         # Manually specify other hyperparameters

@@ -22,7 +22,7 @@ def initialize_weights(model):
                 nn.init.zeros_(layer.bias)
 
 class ShipSpeedPredictorModel:
-    def __init__(self, input_size, lr=0.001, epochs=100, batch_size=32,
+    def __init__(self, input_size, lr=0.001, epochs=100, batch_size=256,
                  optimizer_choice='Adam', loss_function_choice='MSE', alpha=1.0, beta=0.1, k_wave=0.005):
         self.lr = lr  # Part of hyperparameter search
         self.epochs = epochs  # Manually specified or part of hyperparameter search
@@ -254,9 +254,9 @@ class ShipSpeedPredictorModel:
                     V = V * 0.51444  # Convert knots to m/s
 
                     # Extract weather data
-                    H_s = X_unscaled_batch[:, feature_indices['SG_Significant_Wave_Height']]
+                    H_s = X_unscaled_batch[:, feature_indices['Significant_Wave_Height']]
                     theta_ship = X_unscaled_batch[:, feature_indices['True_Heading']]
-                    theta_wave = X_unscaled_batch[:, feature_indices['SG_Mean_Wave_Direction']]
+                    theta_wave = X_unscaled_batch[:, feature_indices['Mean_Wave_Direction']]
 
                     # Physics-based loss
                     physics_loss, P_S_scaled = self.calculate_physics_loss(
@@ -280,9 +280,9 @@ class ShipSpeedPredictorModel:
                     X_unscaled_batch[:, feature_indices['Draft_Fore']] - X_unscaled_batch[:, feature_indices['Draft_Aft']],
                     self.model(X_batch),
                     rho, S, S_APP, A_t, C_a, k, STWAVE1, alpha_trim, eta_D, L, nu, g, L_t,
-                    X_unscaled_batch[:, feature_indices['SG_Significant_Wave_Height']],
+                    X_unscaled_batch[:, feature_indices['Significant_Wave_Height']],
                     X_unscaled_batch[:, feature_indices['True_Heading']],
-                    X_unscaled_batch[:, feature_indices['SG_Mean_Wave_Direction']],
+                    X_unscaled_batch[:, feature_indices['Mean_Wave_Direction']],
                     data_processor
                 )[0])).item()
 
@@ -332,9 +332,9 @@ class ShipSpeedPredictorModel:
                     V = V * 0.51444  # Convert knots to m/s
 
                     # Extract weather data
-                    H_s = X_unscaled_batch[:, feature_indices['SG_Significant_Wave_Height']]
+                    H_s = X_unscaled_batch[:, feature_indices['Significant_Wave_Height']]
                     theta_ship = X_unscaled_batch[:, feature_indices['True_Heading']]
-                    theta_wave = X_unscaled_batch[:, feature_indices['SG_Mean_Wave_Direction']]
+                    theta_wave = X_unscaled_batch[:, feature_indices['Mean_Wave_Direction']]
 
                     # Physics-based loss
                     physics_loss, P_S_scaled = self.calculate_physics_loss(
@@ -545,7 +545,7 @@ if __name__ == "__main__":
         # Check if necessary columns are present
         required_columns = [
             'Speed-Through-Water', 'Draft_Fore', 'Draft_Aft',
-            'SG_Significant_Wave_Height', 'True_Heading', 'SG_Mean_Wave_Direction'
+            'Significant_Wave_Height', 'True_Heading', 'Mean_Wave_Direction'
         ]
         for col in required_columns:
             if col not in feature_indices:
@@ -554,15 +554,15 @@ if __name__ == "__main__":
         # Define hyperparameter grid (search for learning rate, batch size, alpha, beta, k_wave)
         param_grid = {
             'lr': [0.001, 0.01],        # Learning rate values to search
-            'batch_size': [64, 128],    # Batch size values to search
+            'batch_size': [126, 256],    # Batch size values to search
             'alpha': [0.8, 1.0],        # Alpha values to search
             'beta': [0.1, 0.05],         # Beta values to search
             'k_wave': [1e-8, 1e-7, 1e-6]  # k_wave values to search
         }
 
         # Manually specify other hyperparameters
-        epochs_cv = 20     # Number of epochs during cross-validation
-        epochs_final = 100  # Number of epochs during final training
+        epochs_cv = 50     # Number of epochs during cross-validation
+        epochs_final = 200  # Number of epochs during final training
         optimizer = 'Adam'
         loss_function = 'MSE'
 

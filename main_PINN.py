@@ -502,7 +502,7 @@ if __name__ == "__main__":
         # Define hyperparameter grid (search for learning rate, batch size, alpha, beta, gamma)
         param_grid = {
             'lr': [0.001, 0.01],        # Learning rate values to search
-            'batch_size': [64, 128],    # Batch size values to search
+            'batch_size': [128, 256],    # Batch size values to search
             'alpha': [0.8, 1.0],        # Alpha values to search
             'beta': [0.1, 0.2],         # Beta values to search
             'gamma': [0.1, 0.2]         # Gamma values to search

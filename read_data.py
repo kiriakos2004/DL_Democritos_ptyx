@@ -44,13 +44,13 @@ class DataProcessor:
 
         # Optionally exclude rows with missing H_s values
         if self.exclude_missing_Hs:
-            if 'SG_Significant_Wave_Height' in self.df.columns:
+            if 'Significant_Wave_Height' in self.df.columns:
                 initial_row_count = len(self.df)
-                self.df = self.df.dropna(subset=['SG_Significant_Wave_Height'])
+                self.df = self.df.dropna(subset=['Significant_Wave_Height'])
                 rows_dropped = initial_row_count - len(self.df)
-                print(f"Dropped {rows_dropped} rows due to missing 'SG_Significant_Wave_Height'")
+                print(f"Dropped {rows_dropped} rows due to missing 'Significant_Wave_Height'")
             else:
-                print("Warning: 'SG_Significant_Wave_Height' column not found in the dataset.")
+                print("Warning: 'Significant_Wave_Height' column not found in the dataset.")
 
         # Drop rows where 'Power' is less than 1000
         self.df = self.df[self.df['Power'] >= 1000]
