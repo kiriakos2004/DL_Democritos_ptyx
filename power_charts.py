@@ -27,7 +27,7 @@ if result is not None:
     theta_wave = X_train_unscaled['Mean_Wave_Direction'].values
 
     # Use a subset of the data to reduce memory usage
-    subset_size = 40000  # Adjust as needed to control memory usage
+    subset_size = 120000  # Adjust as needed to control memory usage
     V_knots = V_knots[:subset_size]
     trim = trim[:subset_size]
     H_s = H_s[:subset_size]
@@ -88,8 +88,8 @@ if result is not None:
 
     # Define the objective function for Bayesian Optimization
     def objective(k_wave, STWAVE1, alpha_trim, C_a, k, L_t, eta_D):
-        # Randomly sample 10,000 points from the subset data to reduce memory usage
-        sample_indices = np.random.choice(len(V_knots), 10000, replace=False)
+        # Randomly sample 18,000 points from the subset data to reduce memory usage
+        sample_indices = np.random.choice(len(V_knots), 18000, replace=False)
         V_knots_sample = V_knots[sample_indices]
         trim_sample = trim[sample_indices]
         H_s_sample = H_s[sample_indices]
@@ -125,7 +125,7 @@ if result is not None:
     )
 
     # Run the optimization
-    optimizer.maximize(init_points=5, n_iter=40)  # Adjust iterations if needed
+    optimizer.maximize(init_points=5, n_iter=50)  # Adjust iterations if needed
 
     # Retrieve the best parameter values
     best_params = optimizer.max['params']

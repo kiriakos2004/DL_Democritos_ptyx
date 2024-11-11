@@ -202,16 +202,16 @@ class ShipSpeedPredictorModel:
         S = 9950.0        # Wetted surface area in m²
         S_APP = 150.0     # Wetted surface area of appendages in m²
         A_t = 50.0        # Transom area in m²
-        C_a = 0.00024     # Correlation allowance coefficient
-        k = 0.1601         # Form factor (dimensionless)
-        STWAVE1 = 0.00038   # Base wave resistance coefficient
-        alpha_trim = 0.1799  # Effect of trim on wave resistance
-        eta_D = 0.93      # Propulsive efficiency
+        C_a = 0.0005     # Correlation allowance coefficient
+        k = 0.17348         # Form factor (dimensionless)
+        STWAVE1 = 0.00023   # Base wave resistance coefficient
+        alpha_trim = 0.1488  # Effect of trim on wave resistance
+        eta_D = 0.9143      # Propulsive efficiency
         L = 230.0         # Ship length in meters
         nu = 1e-6         # Kinematic viscosity of water (m²/s)
         g = 9.81          # Gravitational acceleration (m/s²)
-        L_t = 20.0        # Transom length in meters
-        k_wave = 3.070041721188262e-09  # Specified by user
+        L_t = 17.1264     # Transom length in meters
+        k_wave = 9.203570329894238e-08  # Specified by user
 
         # Lists to store loss values
         train_losses = []
@@ -402,7 +402,7 @@ class ShipSpeedPredictorModel:
             plt.ioff()  # Disable interactive mode
             plt.show()
             # Optionally, save the plot
-            fig.savefig('training_validation_loss_plot.png')
+            #fig.savefig('training_validation_loss_plot.png')
 
     def evaluate(self, X_eval, y_eval, dataset_type="Validation", data_processor=None):
         """Function to evaluate the model on the given dataset (validation or test)."""
@@ -550,12 +550,12 @@ if __name__ == "__main__":
         param_grid = {
             'lr': [0.001],        # Learning rate values to search
             'batch_size': [256],    # Batch size values to search
-            'alpha': [0.8, 1.0],        # Alpha values to search
-            'beta': [0.1, 0.05]         # Beta values to search
+            'alpha': [0.8],        # Alpha values to search
+            'beta': [0.2]         # Beta values to search
         }
 
         # Manually specify other hyperparameters
-        epochs_cv = 50     # Number of epochs during cross-validation
+        epochs_cv = 1     # Number of epochs during cross-validation
         epochs_final = 200  # Number of epochs during final training
         optimizer = 'Adam'
         loss_function = 'MSE'
