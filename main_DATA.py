@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from itertools import product
 from tqdm import tqdm
-from read_data_old import DataProcessor
+from read_data import DataProcessor
 import matplotlib.pyplot as plt
 
 # Custom weight initialization function
@@ -287,7 +287,7 @@ if __name__ == "__main__":
     data_processor = DataProcessor(
         file_path='data/Aframax/P data_20200213-20200726_Democritos.csv',
         target_column='Power',
-        drop_columns=['TIME']
+        keep_columns_file = 'columns_to_keep.txt'
     )
     result = data_processor.load_and_prepare_data()
     if result is not None:
