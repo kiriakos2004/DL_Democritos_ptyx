@@ -33,6 +33,15 @@ class ShipSpeedPredictorModel:
         self.beta = beta    # Weight for physics loss, part of hyperparameter search
         self.device = self.get_device()
 
+        # Constants for physics-based loss
+        self.rho = 1025.0      # Water density (kg/m³)
+        self.S = 9950.0        # Wetted surface area in m²
+        self.S_APP = 150.0     # Wetted surface area of appendages in m²
+        self.A_t = 50.0        # Transom area in m²
+        self.L = 230.0         # Ship length in meters
+        self.nu = 1e-6         # Kinematic viscosity of water (m²/s)
+        self.g = 9.81          # Gravitational acceleration (m/s²)
+
         # Set random seed for reproducibility
         torch.manual_seed(42)
 
@@ -43,18 +52,31 @@ class ShipSpeedPredictorModel:
     class ShipSpeedPredictor(nn.Module):
         def __init__(self, input_size):
             super().__init__()
-            self.fc1 = nn.Linear(input_size, 128)
-            self.fc2 = nn.Linear(128, 64)
-            self.fc3 = nn.Linear(64, 32)
-            self.fc4 = nn.Linear(32, 16)
-            self.fc5 = nn.Linear(16, 1)
+            self.fc1 = nn.Linear(input_size, 512)
+            self.fc2 = nn.Linear(512, 256)
+            self.fc3 = nn.Linear(256, 128)
+            self.fc4 = nn.Linear(128, 64)
+            self.fc5 = nn.Linear(64, 32)
+            self.fc6 = nn.Linear(32, 16)
+            self.fc7 = nn.Linear(16, 1)
+
+            # Define trainable physics parameters with proper initialization
+            self.k_wave = nn.Parameter(torch.tensor(np.random.uniform(1e-8, 1e-4), dtype=torch.float32))
+            self.STWAVE1 = nn.Parameter(torch.tensor(np.random.uniform(0.0001, 0.01), dtype=torch.float32))
+            self.alpha_trim = nn.Parameter(torch.tensor(np.random.uniform(0.05, 0.2), dtype=torch.float32))
+            self.C_a = nn.Parameter(torch.tensor(np.random.uniform(0.0001, 0.001), dtype=torch.float32))      
+            self.k = nn.Parameter(torch.tensor(np.random.uniform(0.05, 0.5), dtype=torch.float32))
+            self.L_t = nn.Parameter(torch.tensor(np.random.uniform(10, 20), dtype=torch.float32))
+            self.eta_D = nn.Parameter(torch.tensor(np.random.uniform(0.5, 2), dtype=torch.float32))
 
         def forward(self, x):
-            x = torch.relu(self.fc1(x))
-            x = torch.relu(self.fc2(x))
-            x = torch.relu(self.fc3(x))
-            x = torch.relu(self.fc4(x))
-            x = self.fc5(x)
+            x = torch.tanh(self.fc1(x))
+            x = torch.tanh(self.fc2(x))
+            x = torch.tanh(self.fc3(x))
+            x = torch.tanh(self.fc4(x))
+            x = torch.tanh(self.fc5(x))
+            x = torch.tanh(self.fc6(x))           
+            x = self.fc7(x)
             return x
 
     def get_device(self):
@@ -124,98 +146,86 @@ class ShipSpeedPredictorModel:
 
         return unscaled_loader
 
-    def calculate_physics_loss(self, V, trim, predicted_power_scaled, rho, S, S_APP, A_t,
-                               C_a, k, STWAVE1, alpha_trim, eta_D, L, nu, g, L_t,
-                               H_s, theta_ship, theta_wave, data_processor, k_wave):
+    def calculate_physics_loss(self, V, trim, predicted_power_scaled, 
+                               H_s, theta_ship, theta_wave, data_processor):
         """Calculate the physics-based loss, including weather impact."""
-
-        # Physics constants
-        g = torch.tensor(g, device=V.device, dtype=V.dtype)
-        L_t = torch.tensor(L_t, device=V.device, dtype=V.dtype)
-        L = torch.tensor(L, device=V.device, dtype=V.dtype)
-        nu = torch.tensor(nu, device=V.device, dtype=V.dtype)
+        
+        # Extract physics parameters from the model
+        STWAVE1 = self.model.STWAVE1
+        alpha_trim = self.model.alpha_trim
+        C_a = self.model.C_a
+        k = self.model.k
+        L_t = self.model.L_t
+        eta_D = self.model.eta_D
+        k_wave = self.model.k_wave
 
         # Ensure V and H_s are not zero to avoid division by zero errors
         V = torch.clamp(V, min=1e-5)
         H_s = torch.clamp(H_s, min=0.0)
 
         # Calculate Reynolds number Re
-        Re = V * L / nu
+        Re = V * self.L / self.nu  # Using class attributes
         Re = torch.clamp(Re, min=1e-5)
 
         # Calculate frictional resistance coefficient C_f using ITTC-1957 formula
         C_f = 0.075 / (torch.log10(Re) - 2) ** 2
 
         # Frictional Resistance (R_F)
-        R_F = 0.5 * rho * V**2 * S * C_f
+        R_F = 0.5 * self.rho * V**2 * self.S * C_f
 
         # Wave-Making Resistance (R_W)
         STWAVE2 = 1 + alpha_trim * trim
         C_W = STWAVE1 * STWAVE2
-        R_W = 0.5 * rho * V**2 * S * C_W
+        R_W = 0.5 * self.rho * V**2 * self.S * C_W
 
         # Appendage Resistance (R_APP)
-        R_APP = 0.5 * rho * V**2 * S_APP * C_f
+        R_APP = 0.5 * self.rho * V**2 * self.S_APP * C_f
 
         # Calculate F_nt (Transom Froude Number)
-        F_nt = V / torch.sqrt(g * L_t)
+        F_nt = V / torch.sqrt(self.g * L_t)
 
         # Transom Stern Resistance (R_TR)
-        R_TR = 0.5 * rho * V**2 * A_t * (1 - F_nt)
+        R_TR = 0.5 * self.rho * V**2 * self.A_t * (1 - F_nt)
 
         # Correlation Allowance Resistance (R_C)
-        R_C = 0.5 * rho * V**2 * S * C_a
+        R_C = 0.5 * self.rho * V**2 * self.S * C_a
 
         # Compute relative wave direction in degrees
         theta_rel_wave = torch.abs(theta_wave - theta_ship) % 360
         theta_rel_wave = torch.where(theta_rel_wave > 180, 360 - theta_rel_wave, theta_rel_wave)
-        theta_rel_wave_rad = theta_rel_wave * np.pi / 180  # Convert to radians
+        theta_rel_wave_rad = theta_rel_wave * torch.pi / 180  # Convert to radians
 
         # Compute added resistance due to waves
-        R_AW = 0.5 * rho * V**2 * S * k_wave * H_s**2 * (1 + torch.cos(theta_rel_wave_rad))
+        R_AW = 0.5 * self.rho * V**2 * self.S * k_wave * H_s**2 * (1 + torch.cos(theta_rel_wave_rad))
 
         # Total Resistance (R_T)
-        R_T = R_F * (1 + k) + R_W + R_APP + R_TR + R_C + R_AW
+        R_T = R_F * (1 + k) + R_W + R_APP + R_TR + R_C + R_AW        
 
         # Calculate shaft power (P_S)
         P_S = ((V * R_T) / eta_D) / 1000  # Convert to kilowatts if necessary
 
-        # Convert P_S to a DataFrame with the same column name as the target
-        P_S_df = pd.DataFrame(P_S.cpu().detach().numpy(), columns=[data_processor.target_column])
-
-        # Scale P_S using the same scaler as the target variable
-        P_S_scaled = data_processor.scaler_y.transform(P_S_df).flatten()
-        P_S_scaled = torch.tensor(P_S_scaled, dtype=V.dtype, device=V.device)
+        # Scaling P_S using the same scaler as the target variable
+        # Assuming data_processor.scaler_y has 'mean_' and 'scale_' attributes compatible with torch
+        scaler_y_mean = torch.tensor(data_processor.scaler_y.mean_, dtype=V.dtype, device=V.device)
+        scaler_y_scale = torch.tensor(data_processor.scaler_y.scale_, dtype=V.dtype, device=V.device)
+        P_S_scaled = (P_S - scaler_y_mean) / scaler_y_scale  # Element-wise scaling
 
         # Compute physics loss in scaled space to match data loss scale
         physics_loss = (predicted_power_scaled.squeeze() - P_S_scaled) ** 2
 
         return physics_loss, P_S_scaled
 
-    def train(self, train_loader, unscaled_data_loader, feature_indices, data_processor, val_loader=None, live_plot=False):
+    def train(self, train_loader, unscaled_data_loader, feature_indices, data_processor, 
+              val_loader=None, val_unscaled_loader=None, live_plot=False):
         """Function to train the model, now including the physics-based loss."""
         optimizer = self.get_optimizer()
         loss_function = self.get_loss_function()
 
-        # Constants for physics-based loss
-        rho = 1025.0      # Water density (kg/m³)
-        S = 9950.0        # Wetted surface area in m²
-        S_APP = 150.0     # Wetted surface area of appendages in m²
-        A_t = 50.0        # Transom area in m²
-        C_a = 0.0005     # Correlation allowance coefficient
-        k = 0.17348         # Form factor (dimensionless)
-        STWAVE1 = 0.00023   # Base wave resistance coefficient
-        alpha_trim = 0.1488  # Effect of trim on wave resistance
-        eta_D = 0.9143      # Propulsive efficiency
-        L = 230.0         # Ship length in meters
-        nu = 1e-6         # Kinematic viscosity of water (m²/s)
-        g = 9.81          # Gravitational acceleration (m/s²)
-        L_t = 17.1264     # Transom length in meters
-        k_wave = 9.203570329894238e-08  # Specified by user
-
         # Lists to store loss values
-        train_losses = []
-        val_losses = []
+        train_data_losses = []
+        train_physics_losses = []
+        val_data_losses = []
+        val_physics_losses = []
 
         # Initialize live plotting if enabled
         if live_plot:
@@ -224,7 +234,7 @@ class ShipSpeedPredictorModel:
 
         for epoch in range(self.epochs):
             self.model.train()
-            running_loss = 0.0
+            running_total_loss = 0.0
             running_data_loss = 0.0
             running_physics_loss = 0.0
 
@@ -255,11 +265,10 @@ class ShipSpeedPredictorModel:
                     theta_ship = X_unscaled_batch[:, feature_indices['True_Heading']]
                     theta_wave = X_unscaled_batch[:, feature_indices['Mean_Wave_Direction']]
 
-                    # Physics-based loss
+                    # Physics-based loss using trainable parameters
                     physics_loss, P_S_scaled = self.calculate_physics_loss(
-                        V, trim, outputs, rho, S, S_APP, A_t, C_a, k,
-                        STWAVE1, alpha_trim, eta_D, L, nu, g, L_t,
-                        H_s, theta_ship, theta_wave, data_processor, k_wave
+                        V, trim, outputs,
+                        H_s, theta_ship, theta_wave, data_processor
                     )
 
                     # Combine the losses
@@ -270,37 +279,35 @@ class ShipSpeedPredictorModel:
                     return total_loss
 
                 optimizer.step(closure)
-                total_loss = closure()
-                data_loss_value = (self.alpha * loss_function(self.model(X_batch), y_batch)).item()
-                physics_loss_value = (self.beta * torch.mean(self.calculate_physics_loss(
-                    X_unscaled_batch[:, feature_indices['Speed-Through-Water']] * 0.51444,
-                    X_unscaled_batch[:, feature_indices['Draft_Fore']] - X_unscaled_batch[:, feature_indices['Draft_Aft']],
-                    self.model(X_batch),
-                    rho, S, S_APP, A_t, C_a, k, STWAVE1, alpha_trim, eta_D, L, nu, g, L_t,
-                    X_unscaled_batch[:, feature_indices['Significant_Wave_Height']],
-                    X_unscaled_batch[:, feature_indices['True_Heading']],
-                    X_unscaled_batch[:, feature_indices['Mean_Wave_Direction']],
-                    data_processor, k_wave
-                )[0])).item()
 
-                running_loss = total_loss.item()
-                running_data_loss = data_loss_value
-                running_physics_loss = physics_loss_value
+                # After optimizer.step, retrieve the updated outputs and losses
+                outputs = self.model(X_batch)
+                data_loss = loss_function(outputs, y_batch)
+                physics_loss, P_S_scaled = self.calculate_physics_loss(
+                    V, trim, outputs,
+                    H_s, theta_ship, theta_wave, data_processor
+                )
+                total_loss = self.alpha * data_loss + self.beta * torch.mean(physics_loss)
+
+                running_total_loss = total_loss.item()
+                running_data_loss = (self.alpha * data_loss).item()
+                running_physics_loss = (self.beta * torch.mean(physics_loss)).item()
+
+                # Append only the average losses per epoch
+                train_data_losses.append(running_data_loss)
+                train_physics_losses.append(running_physics_loss)
 
                 # Update progress bar
                 progress_bar = tqdm(total=1, desc=f"Epoch {epoch+1}/{self.epochs}", leave=True)
                 progress_bar.set_postfix({
-                    "Total Loss": f"{running_loss:.8f}",
+                    "Total Loss": f"{running_total_loss:.8f}",
                     "Data Loss": f"{running_data_loss:.8f}",
                     "Physics Loss": f"{running_physics_loss:.8f}"
                 })
                 progress_bar.update(1)
                 progress_bar.close()
             else:
-                # Determine the total number of batches
                 total_batches = len(train_loader)
-
-                # Progress bar for each epoch
                 progress_bar = tqdm(
                     zip(train_loader, unscaled_data_loader),
                     desc=f"Epoch {epoch+1}/{self.epochs}",
@@ -333,14 +340,13 @@ class ShipSpeedPredictorModel:
                     theta_ship = X_unscaled_batch[:, feature_indices['True_Heading']]
                     theta_wave = X_unscaled_batch[:, feature_indices['Mean_Wave_Direction']]
 
-                    # Physics-based loss
+                    # Physics-based loss using trainable parameters
                     physics_loss, P_S_scaled = self.calculate_physics_loss(
-                        V, trim, outputs, rho, S, S_APP, A_t, C_a, k,
-                        STWAVE1, alpha_trim, eta_D, L, nu, g, L_t,
-                        H_s, theta_ship, theta_wave, data_processor, k_wave
+                        V, trim, outputs,
+                        H_s, theta_ship, theta_wave, data_processor
                     )
 
-                    # Combine the losses using hyperparameters alpha and beta
+                    # Combine the losses
                     total_loss = self.alpha * data_loss + self.beta * torch.mean(physics_loss)
 
                     # Backward pass and optimization
@@ -348,54 +354,81 @@ class ShipSpeedPredictorModel:
                     optimizer.step()
 
                     # Update running losses
-                    running_loss += total_loss.item()
+                    running_total_loss += total_loss.item()
                     running_data_loss += data_loss.item()
                     running_physics_loss += physics_loss.mean().item()
 
-                    # Update progress bar with current losses
+                    # Update progress bar
                     progress_bar.set_postfix({
-                        "Total Loss": f"{running_loss / (batch_index + 1):.8f}",
+                        "Total Loss": f"{running_total_loss / (batch_index + 1):.8f}",
                         "Data Loss": f"{running_data_loss / (batch_index + 1):.8f}",
                         "Physics Loss": f"{running_physics_loss / (batch_index + 1):.8f}"
                     })
+                progress_bar.close()
 
                 # Compute average losses for the epoch
-                avg_total_loss = running_loss / total_batches
+                avg_total_loss = running_total_loss / total_batches
                 avg_data_loss = running_data_loss / total_batches
                 avg_physics_loss = running_physics_loss / total_batches
 
-                # Store losses for plotting
-                train_losses.append(avg_total_loss)
+                # Append only the average losses per epoch
+                train_data_losses.append(avg_data_loss)
+                train_physics_losses.append(avg_physics_loss)
 
-                # Compute validation loss if validation data is provided
-                if val_loader is not None:
+                # Validation Logic (ensure trainable parameters are used)
+                if val_loader is not None and val_unscaled_loader is not None:
                     self.model.eval()
-                    val_running_loss = 0.0
+                    val_running_data_loss = 0.0
+                    val_running_physics_loss = 0.0
                     with torch.no_grad():
-                        for X_val_batch, y_val_batch in val_loader:
+                        for (X_val_batch, y_val_batch), (X_val_unscaled_batch,) in zip(val_loader, val_unscaled_loader):
                             X_val_batch, y_val_batch = X_val_batch.to(self.device), y_val_batch.to(self.device)
+                            X_val_unscaled_batch = X_val_unscaled_batch.to(self.device)
                             val_outputs = self.model(X_val_batch)
                             val_loss = loss_function(val_outputs, y_val_batch)
-                            val_running_loss += val_loss.item()
-                    avg_val_loss = val_running_loss / len(val_loader)
-                    val_losses.append(avg_val_loss)
-                    print(f"Epoch [{epoch+1}/{self.epochs}], Total Loss: {avg_total_loss:.8f}, "
-                          f"Validation Loss: {avg_val_loss:.8f}")
+                            val_running_data_loss += val_loss.item()
+
+                            # Extract speed and trim
+                            V_val = X_val_unscaled_batch[:, speed_idx] * 0.51444  # Convert knots to m/s
+                            trim_val = X_val_unscaled_batch[:, fore_draft_idx] - X_val_unscaled_batch[:, aft_draft_idx]
+
+                            # Extract weather data
+                            H_s_val = X_val_unscaled_batch[:, feature_indices['Significant_Wave_Height']]
+                            theta_ship_val = X_val_unscaled_batch[:, feature_indices['True_Heading']]
+                            theta_wave_val = X_val_unscaled_batch[:, feature_indices['Mean_Wave_Direction']]
+
+                            # Physics-based loss using trainable parameters
+                            physics_loss_val, _ = self.calculate_physics_loss(
+                                V_val, trim_val, val_outputs,
+                                H_s_val, theta_ship_val, theta_wave_val, data_processor
+                            )
+                            val_running_physics_loss += torch.mean(physics_loss_val).item()
+
+                    avg_val_data_loss = val_running_data_loss / len(val_loader)
+                    avg_val_physics_loss = val_running_physics_loss / len(val_loader)
+                    val_data_losses.append(avg_val_data_loss)
+                    val_physics_losses.append(avg_val_physics_loss)
+                    print(f"Epoch [{epoch+1}/{self.epochs}], "
+                          f"Validation Data Loss: {avg_val_data_loss:.8f}, "
+                          f"Validation Physics Loss: {avg_val_physics_loss:.8f}")
                 else:
-                    val_losses.append(None)
+                    val_data_losses.append(None)
+                    val_physics_losses.append(None)
                     print(f"Epoch [{epoch+1}/{self.epochs}], Total Loss: {avg_total_loss:.8f}")
 
-                # Live plotting
-                if live_plot:
-                    ax.clear()
-                    ax.plot(range(1, epoch+2), train_losses, label='Training Loss')
-                    if val_loader is not None:
-                        ax.plot(range(1, epoch+2), val_losses, label='Validation Loss')
-                    ax.set_xlabel('Epoch')
-                    ax.set_ylabel('Loss')
-                    ax.set_title('Training and Validation Loss over Epochs')
-                    ax.legend()
-                    plt.pause(0.01)  # Pause to update the plot
+            # Live plotting
+            if live_plot:
+                ax.clear()
+                ax.plot(range(1, epoch+2), train_data_losses, label='Training Data Loss')
+                ax.plot(range(1, epoch+2), train_physics_losses, label='Training Physics Loss')
+                if val_loader is not None and val_unscaled_loader is not None:
+                    ax.plot(range(1, epoch+2), val_data_losses, label='Validation Data Loss')
+                    ax.plot(range(1, epoch+2), val_physics_losses, label='Validation Physics Loss')
+                ax.set_xlabel('Epoch')
+                ax.set_ylabel('Loss')
+                ax.set_title('Training and Validation Loss over Epochs')
+                ax.legend()
+                plt.pause(0.01)  # Pause to update the plot
 
         # After training, finalize the plot
         if live_plot:
@@ -444,12 +477,14 @@ class ShipSpeedPredictorModel:
             train_loader = self.prepare_dataloader(X_train_fold, y_train_fold)
             unscaled_data_loader = self.prepare_unscaled_dataloader(X_train_unscaled_fold)
             val_loader = self.prepare_dataloader(X_val_fold, y_val_fold)
+            val_unscaled_loader = self.prepare_unscaled_dataloader(X_val_unscaled_fold)
 
             # Reset model weights for each fold
             self.model.apply(self.reset_weights)
 
             # Train the model on the training split without live plotting
-            self.train(train_loader, unscaled_data_loader, feature_indices, data_processor, val_loader=val_loader, live_plot=False)
+            self.train(train_loader, unscaled_data_loader, feature_indices, data_processor, 
+                       val_loader=val_loader, val_unscaled_loader=val_unscaled_loader, live_plot=False)
 
             # Evaluate the model on the validation split
             val_loss = self.evaluate(X_val_fold, y_val_fold, dataset_type="Validation", data_processor=data_processor)
@@ -520,7 +555,7 @@ if __name__ == "__main__":
     data_processor = DataProcessor(
         file_path='data/Aframax/P data_20200213-20200726_Democritos.csv',
         target_column='Power',
-        keep_columns_file = 'columns_to_keep.txt'
+        keep_columns_file='columns_to_keep.txt'
     )
     result = data_processor.load_and_prepare_data()
     if result is not None:
@@ -549,22 +584,22 @@ if __name__ == "__main__":
         # Define hyperparameter grid (search for learning rate, batch size, alpha, beta)
         param_grid = {
             'lr': [0.001],        # Learning rate values to search
-            'batch_size': [256],    # Batch size values to search
-            'alpha': [0.8],        # Alpha values to search
-            'beta': [0.2]         # Beta values to search
+            'batch_size': [256],  # Batch size values to search
+            'alpha': [0.95],      # Alpha values to search
+            'beta': [0.05]        # Beta values to search
         }
 
         # Manually specify other hyperparameters
-        epochs_cv = 1     # Number of epochs during cross-validation
-        epochs_final = 200  # Number of epochs during final training
+        epochs_cv = 1        # Number of epochs during cross-validation
+        epochs_final = 700   # Number of epochs during final training
         optimizer = 'Adam'
         loss_function = 'MSE'
 
         # Perform hyperparameter search with cross-validation
         best_params, best_loss = ShipSpeedPredictorModel.hyperparameter_search(
-            X_train, X_train_unscaled, y_train, feature_indices,
-            param_grid, epochs_cv, optimizer, loss_function, data_processor, k_folds=5
-        )
+                X_train, X_train_unscaled, y_train, feature_indices,
+                param_grid, epochs_cv, optimizer, loss_function, data_processor, k_folds=5
+            )
 
         # Split X_train and y_train into training and validation sets for final training
         X_train_final, X_val_final, X_train_unscaled_final, X_val_unscaled_final, y_train_final, y_val_final = train_test_split(
@@ -588,12 +623,12 @@ if __name__ == "__main__":
         final_train_loader = final_model.prepare_dataloader(X_train_final, y_train_final)
         final_unscaled_loader = final_model.prepare_unscaled_dataloader(X_train_unscaled_final)
         final_val_loader = final_model.prepare_dataloader(X_val_final, y_val_final)
-        # No need for final_val_unscaled_loader unless required
+        final_val_unscaled_loader = final_model.prepare_unscaled_dataloader(X_val_unscaled_final)
 
         # Train the final model on the training set, with validation data and live plotting enabled
         final_model.train(
             final_train_loader, final_unscaled_loader, feature_indices, data_processor,
-            val_loader=final_val_loader, live_plot=True
+            val_loader=final_val_loader, val_unscaled_loader=final_val_unscaled_loader, live_plot=True
         )
 
         # Evaluate the final model on the test set (after hyperparameter tuning)

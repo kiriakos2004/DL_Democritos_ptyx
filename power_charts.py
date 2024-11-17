@@ -112,7 +112,7 @@ if result is not None:
     optimizer = BayesianOptimization(
         f=objective,
         pbounds={
-            'k_wave': (1e-9, 1e-7),        # Narrowed range for k_wave
+            'k_wave': (1e-8, 1e-9),        # Narrowed range for k_wave
             'STWAVE1': (0.0001, 0.005),    # Range for STWAVE1
             'alpha_trim': (0.05, 0.2),     # Range for alpha_trim
             'C_a': (0.0001, 0.001),        # Range for correlation allowance coefficient C_a
