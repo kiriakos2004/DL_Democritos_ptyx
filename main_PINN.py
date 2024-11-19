@@ -10,10 +10,12 @@ from itertools import product
 from tqdm import tqdm
 from read_data import DataProcessor
 import matplotlib.pyplot as plt
+import joblib
+import json
 
 # Custom weight initialization function
 def initialize_weights(model):
-    """Function to customly initialize weights in order to make results between PINN and no_PINN more comparable."""
+    """Function to customly initialize weights to make results between PINN and no_PINN more comparable."""
     for layer in model.modules():
         if isinstance(layer, nn.Linear):
             # Use Kaiming uniform initialization for the linear layers
@@ -23,7 +25,8 @@ def initialize_weights(model):
 
 class ShipSpeedPredictorModel:
     def __init__(self, input_size, lr=0.001, epochs=100, batch_size=32,
-                 optimizer_choice='Adam', loss_function_choice='MSE', alpha=1.0, beta=0.1, gamma=0.1):
+                 optimizer_choice='Adam', loss_function_choice='MSE', alpha=1.0, beta=0.1, gamma=0.1,
+                 debug_mode=False):
         self.lr = lr  # Part of hyperparameter search
         self.epochs = epochs  # Manually specified
         self.batch_size = batch_size  # Part of hyperparameter search
@@ -33,6 +36,7 @@ class ShipSpeedPredictorModel:
         self.beta = beta    # Weight for physics loss, part of hyperparameter search
         self.gamma = gamma  # Weight for boundary condition loss, part of hyperparameter search
         self.device = self.get_device()
+        self.debug_mode = debug_mode  # Enable or disable debug mode
 
         # Set random seed for reproducibility
         torch.manual_seed(42)
@@ -44,22 +48,26 @@ class ShipSpeedPredictorModel:
     class ShipSpeedPredictor(nn.Module):
         def __init__(self, input_size):
             super().__init__()
-            self.fc1 = nn.Linear(input_size, 128)
-            self.fc2 = nn.Linear(128, 64)
-            self.fc3 = nn.Linear(64, 32)
-            self.fc4 = nn.Linear(32, 16)
-            self.fc5 = nn.Linear(16, 1)
+            self.fc1 = nn.Linear(input_size, 512)
+            self.fc2 = nn.Linear(512, 256)
+            self.fc3 = nn.Linear(256, 128)
+            self.fc4 = nn.Linear(128, 64)
+            self.fc5 = nn.Linear(64, 32)
+            self.fc6 = nn.Linear(32, 16)
+            self.fc7 = nn.Linear(16, 1)
 
         def forward(self, x):
-            x = torch.relu(self.fc1(x))
-            x = torch.relu(self.fc2(x))
-            x = torch.relu(self.fc3(x))
-            x = torch.relu(self.fc4(x))
-            x = self.fc5(x)
+            x = torch.tanh(self.fc1(x))
+            x = torch.tanh(self.fc2(x))
+            x = torch.tanh(self.fc3(x))
+            x = torch.tanh(self.fc4(x))
+            x = torch.tanh(self.fc5(x))
+            x = torch.tanh(self.fc6(x))
+            x = self.fc7(x)
             return x
 
     def get_device(self):
-        """Function to check if a GPU is available (MPS for Apple Silicon or CUDA for NVIDIA) and return the appropriate device."""
+        """Function to check if a GPU is available and return the appropriate device."""
         if torch.cuda.is_available():
             device = torch.device("cuda")
             print("Using NVIDIA GPU with CUDA")
@@ -152,12 +160,12 @@ class ShipSpeedPredictorModel:
         x_boundary.requires_grad = True
         return x_boundary
 
-    def compute_pde_residual(self, x_collocation, feature_indices):
-        """Function to compute PDE residuals at collocation points."""
+    def compute_pde_residual(self, x_collocation, feature_indices, data_processor):
+        """Compute PDE residuals at collocation points with scaling adjustments."""
         x_collocation.requires_grad = True
         outputs = self.model(x_collocation)
 
-        # Compute derivative of outputs with respect to x_collocation
+        # Compute gradient of outputs with respect to inputs
         outputs_x = torch.autograd.grad(
             outputs=outputs,
             inputs=x_collocation,
@@ -166,17 +174,36 @@ class ShipSpeedPredictorModel:
             retain_graph=True
         )[0]
 
-        # 'Speed-Through-Water' is V
+        # Get index and values of 'Speed-Through-Water' (V)
         V_idx = feature_indices['Speed-Through-Water']
         V = x_collocation[:, V_idx].view(-1, 1)
+
+        # Obtain scaling parameters
+        mean_P = torch.tensor(data_processor.scaler_y.mean_, dtype=torch.float32, device=self.device)
+        std_P = torch.tensor(data_processor.scaler_y.scale_, dtype=torch.float32, device=self.device)
+        mean_V = torch.tensor(data_processor.scaler_X.mean_[V_idx], dtype=torch.float32, device=self.device)
+        std_V = torch.tensor(data_processor.scaler_X.scale_[V_idx], dtype=torch.float32, device=self.device)
+
+        # Unscale outputs and V
+        outputs_unscaled = outputs * std_P + mean_P
+        V_unscaled = V * std_V + mean_V
+
+        # Adjust derivative for scaling
         outputs_V = outputs_x[:, V_idx].view(-1, 1)
+        outputs_V_unscaled = (outputs_V * std_P) / std_V
 
-        # Define simplified PDE: dP/dV + aP - bV^2 = 0
-        a = torch.tensor(0.1, device=self.device)
-        b = torch.tensor(0.2, device=self.device)
-        residual = outputs_V + a * outputs - b * V**2
+        # Define adjusted constants
+        a = torch.tensor(0.00001, dtype=torch.float32, device=self.device)
+        b = torch.tensor(0.00002, dtype=torch.float32, device=self.device)
 
-        return residual
+        # Compute residual
+        residual = outputs_V_unscaled + a * outputs_unscaled - b * V_unscaled ** 2
+
+        # Normalize residual with a larger scaling factor
+        scaling_factor = torch.tensor(1000.0, dtype=torch.float32, device=self.device)
+        residual_normalized = residual / scaling_factor
+
+        return residual_normalized
 
     def compute_boundary_loss(self, x_boundary):
         """Function to compute boundary condition loss."""
@@ -218,7 +245,7 @@ class ShipSpeedPredictorModel:
 
                     # Sample collocation points for PDE residuals
                     x_collocation = self.sample_collocation_points(len(X_batch), X_train_unscaled, data_processor)
-                    pde_residual = self.compute_pde_residual(x_collocation, feature_indices)
+                    pde_residual = self.compute_pde_residual(x_collocation, feature_indices, data_processor)
                     pde_loss = torch.mean(pde_residual**2)
 
                     # Sample boundary points for boundary condition loss
@@ -237,7 +264,7 @@ class ShipSpeedPredictorModel:
                 running_loss = total_loss.item()
                 running_data_loss = (self.alpha * loss_function(self.model(X_batch), y_batch)).item()
                 running_pde_loss = (self.beta * torch.mean(self.compute_pde_residual(
-                    self.sample_collocation_points(len(X_batch), X_train_unscaled, data_processor), feature_indices
+                    self.sample_collocation_points(len(X_batch), X_train_unscaled, data_processor), feature_indices, data_processor
                 )**2)).item()
                 running_boundary_loss = (self.gamma * self.compute_boundary_loss(
                     self.sample_boundary_points(len(X_batch), X_train_unscaled, feature_indices, data_processor)
@@ -279,7 +306,7 @@ class ShipSpeedPredictorModel:
 
                     # Sample collocation points for PDE residuals
                     x_collocation = self.sample_collocation_points(self.batch_size, X_train_unscaled, data_processor)
-                    pde_residual = self.compute_pde_residual(x_collocation, feature_indices)
+                    pde_residual = self.compute_pde_residual(x_collocation, feature_indices, data_processor)
                     pde_loss = torch.mean(pde_residual**2)
 
                     # Sample boundary points for boundary condition loss
@@ -449,7 +476,8 @@ class ShipSpeedPredictorModel:
                 batch_size=batch_size,
                 alpha=alpha,
                 beta=beta,
-                gamma=gamma
+                gamma=gamma,
+                debug_mode=False  # Disable debug mode during hyperparameter search
             )
 
             # Perform cross-validation
@@ -476,7 +504,7 @@ if __name__ == "__main__":
     data_processor = DataProcessor(
         file_path='data/Aframax/P data_20200213-20200726_Democritos.csv',
         target_column='Power',
-        keep_columns_file = 'columns_to_keep.txt'
+        keep_columns_file='columns_to_keep.txt'
     )
     result = data_processor.load_and_prepare_data()
     if result is not None:
@@ -501,17 +529,17 @@ if __name__ == "__main__":
 
         # Define hyperparameter grid (search for learning rate, batch size, alpha, beta, gamma)
         param_grid = {
-            'lr': [0.001, 0.01],        # Learning rate values to search
-            'batch_size': [128, 256],    # Batch size values to search
-            'alpha': [0.8, 1.0],        # Alpha values to search
-            'beta': [0.1, 0.2],         # Beta values to search
-            'gamma': [0.1, 0.2]         # Gamma values to search
+            'lr': [0.001, 0.01],         # Learning rate values to search
+            'batch_size': [256],   # Batch size values to search
+            'alpha': [0.9, 1.0],   # Alpha values to search
+            'beta': [0.01, 0.1],   # Beta values to search
+            'gamma': [0.1, 0.2]    # Gamma values to search
         }
 
         # Manually specify other hyperparameters
         epochs_cv = 50     # Number of epochs during cross-validation
-        epochs_final = 200  # Number of epochs during final training
-        optimizer = 'Adam'
+        epochs_final = 700  # Number of epochs during final training
+        optimizer = 'LBFGS'
         loss_function = 'MSE'
 
         # Perform hyperparameter search with cross-validation
@@ -525,7 +553,7 @@ if __name__ == "__main__":
             X_train, X_train_unscaled, y_train, test_size=0.2, random_state=42
         )
 
-        # Create the final model instance
+        # Create the final model instance with adjusted weights
         final_model = ShipSpeedPredictorModel(
             input_size=X_train.shape[1],
             lr=best_params['lr'],                    # Best learning rate
@@ -533,9 +561,10 @@ if __name__ == "__main__":
             optimizer_choice=optimizer,              # Manually specified
             loss_function_choice=loss_function,      # Manually specified
             batch_size=best_params['batch_size'],    # Best batch size
-            alpha=best_params['alpha'],              # Best alpha
-            beta=best_params['beta'],                # Best beta
-            gamma=best_params['gamma']               # Best gamma
+            alpha=best_params['alpha'],              # Adjusted alpha
+            beta=best_params['beta'],                # Adjusted beta (e.g., 0.01)
+            gamma=best_params['gamma'],              # Best gamma
+            debug_mode=False                         # Disable debug mode for final training
         )
 
         # Prepare the data loaders for the final model
@@ -548,5 +577,16 @@ if __name__ == "__main__":
             val_loader=final_val_loader, live_plot=True
         )
 
-        # Evaluate the final model on the test set (after hyperparameter tuning)
+        # Save the trained model's state_dict
+        torch.save(final_model.model.state_dict(), 'final_model.pth')
+
+        # Save the DataProcessor's scaler parameters
+        joblib.dump(data_processor.scaler_X, 'scaler_X.save')
+        joblib.dump(data_processor.scaler_y, 'scaler_y.save')
+
+        # Save the best hyperparameters
+        with open('best_hyperparameters.json', 'w') as f:
+            json.dump(best_params, f)
+
+        # Evaluate the final model on the test set
         final_model.evaluate(X_test, y_test, dataset_type="Test", data_processor=data_processor)

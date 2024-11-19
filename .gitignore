@@ -7,6 +7,9 @@ Lib/
 Scripts/
 share/
 old_code/
+saved_PINN/
+saved_PGNN/
+saved_DATA/
 
 # Ignore pyvenv.cfg
 pyvenv.cfg

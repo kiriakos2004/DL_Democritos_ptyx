@@ -10,6 +10,8 @@ from itertools import product
 from tqdm import tqdm
 from read_data import DataProcessor
 import matplotlib.pyplot as plt
+import joblib
+import json
 
 # Custom weight initialization function
 def initialize_weights(model):
@@ -41,18 +43,22 @@ class ShipSpeedPredictorModel:
     class ShipSpeedPredictor(nn.Module):
         def __init__(self, input_size):
             super().__init__()
-            self.fc1 = nn.Linear(input_size, 128)
-            self.fc2 = nn.Linear(128, 64)
-            self.fc3 = nn.Linear(64, 32)
-            self.fc4 = nn.Linear(32, 16)
-            self.fc5 = nn.Linear(16, 1)
+            self.fc1 = nn.Linear(input_size, 512)
+            self.fc2 = nn.Linear(512, 256)
+            self.fc3 = nn.Linear(256, 128)
+            self.fc4 = nn.Linear(128, 64)
+            self.fc5 = nn.Linear(64, 32)
+            self.fc6 = nn.Linear(32, 16)
+            self.fc7 = nn.Linear(16, 1)
 
         def forward(self, x):
             x = torch.relu(self.fc1(x))
             x = torch.relu(self.fc2(x))
             x = torch.relu(self.fc3(x))
             x = torch.relu(self.fc4(x))
-            x = self.fc5(x)
+            x = torch.relu(self.fc5(x))
+            x = torch.relu(self.fc6(x))
+            x = self.fc7(x)
             return x
 
     def get_device(self):
@@ -275,10 +281,9 @@ class ShipSpeedPredictorModel:
 
         print(f"\nBest parameters: {best_params}, with average validation loss: {best_loss:.8f}")
 
-        # Save the best hyperparameters to a text file
-        with open("best_hyperparameters_DATA.txt", "w") as f:
-            f.write(f"Best parameters: {best_params}\n")
-            f.write(f"Best average validation loss: {best_loss:.8f}\n")
+        # Save the best hyperparameters to a JSON file
+        with open('best_hyperparameters.json', 'w') as f:
+            json.dump(best_params, f)
 
         return best_params, best_loss
 
@@ -287,7 +292,7 @@ if __name__ == "__main__":
     data_processor = DataProcessor(
         file_path='data/Aframax/P data_20200213-20200726_Democritos.csv',
         target_column='Power',
-        keep_columns_file = 'columns_to_keep.txt'
+        keep_columns_file='columns_to_keep.txt'
     )
     result = data_processor.load_and_prepare_data()
     if result is not None:
@@ -299,13 +304,13 @@ if __name__ == "__main__":
 
         # Define hyperparameter grid (search for learning rate and batch size only)
         param_grid = {
-            'lr': [0.001, 0.01],        # Learning rate values to search
-            'batch_size': [256]      # Batch size values to search
+            'lr': [0.001],  # Learning rate values to search
+            'batch_size': [256]    # Batch size values to search
         }
 
         # Manually specify other hyperparameters
-        epochs_cv = 50     # Number of epochs during cross-validation
-        epochs_final = 200  # Number of epochs during final training
+        epochs_cv = 1      # Number of epochs during cross-validation
+        epochs_final = 700  # Number of epochs during final training
         optimizer = 'Adam'
         loss_function = 'MSE'
 
@@ -335,6 +340,13 @@ if __name__ == "__main__":
 
         # Train the final model on the training set, with validation data and live plotting enabled
         final_model.train(final_train_loader, val_loader=final_val_loader, live_plot=True)
+
+        # Save the trained model's state_dict
+        torch.save(final_model.model.state_dict(), 'final_model.pth')
+
+        # Save the DataProcessor's scaler parameters
+        joblib.dump(data_processor.scaler_X, 'scaler_X.save')
+        joblib.dump(data_processor.scaler_y, 'scaler_y.save')
 
         # Evaluate the final model on the test set (after hyperparameter tuning)
         final_model.evaluate(X_test, y_test, dataset_type="Test", data_processor=data_processor)
