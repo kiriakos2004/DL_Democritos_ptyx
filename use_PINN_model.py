@@ -7,9 +7,9 @@ from main_PINN import ShipSpeedPredictorModel  # Import the model class from you
 
 if __name__ == "__main__":
     # Define file paths and parameters
-    model_state_dict_path = 'saved_PINN/LBFGS_Optimizer/final_model.pth'
-    scaler_X_path = 'saved_PINN/LBFGS_Optimizer/scaler_X.save'
-    scaler_y_path = 'saved_PINN/LBFGS_Optimizer/scaler_y.save'
+    model_state_dict_path = 'saved_PINN/Adam_tanh_Optimizer/final_model.pth'
+    scaler_X_path = 'saved_PINN/Adam_tanh_Optimizer/scaler_X.save'
+    scaler_y_path = 'saved_PINN/Adam_tanh_Optimizer/scaler_y.save'
     test_data_file = 'data/Aframax/P data_20200213-20200726_Democritos.csv'  # Update if necessary
     keep_columns_file = 'columns_to_keep.txt'
     target_column = 'Power'
@@ -33,10 +33,10 @@ if __name__ == "__main__":
 
         # Load the best hyperparameters (optional, for consistency)
         import json
-        with open('saved_PINN/LBFGS_Optimizer/best_hyperparameters.json', 'r') as f:
+        with open('saved_PINN/Adam_tanh_Optimizer/best_hyperparameters.json', 'r') as f:
             best_params = json.load(f)
 
-        optimizer = 'LBFGS'        # Should match what was used during training
+        optimizer = 'Adam'        # Should match what was used during training
         loss_function = 'MSE'     # Should match what was used during training
 
         # Initialize the model

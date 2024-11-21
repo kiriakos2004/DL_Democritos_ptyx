@@ -52,12 +52,12 @@ class ShipSpeedPredictorModel:
             self.fc7 = nn.Linear(16, 1)
 
         def forward(self, x):
-            x = torch.relu(self.fc1(x))
-            x = torch.relu(self.fc2(x))
-            x = torch.relu(self.fc3(x))
-            x = torch.relu(self.fc4(x))
-            x = torch.relu(self.fc5(x))
-            x = torch.relu(self.fc6(x))
+            x = torch.tanh(self.fc1(x))
+            x = torch.tanh(self.fc2(x))
+            x = torch.tanh(self.fc3(x))
+            x = torch.tanh(self.fc4(x))
+            x = torch.tanh(self.fc5(x))
+            x = torch.tanh(self.fc6(x))
             x = self.fc7(x)
             return x
 
@@ -304,12 +304,12 @@ if __name__ == "__main__":
 
         # Define hyperparameter grid (search for learning rate and batch size only)
         param_grid = {
-            'lr': [0.001],  # Learning rate values to search
+            'lr': [0.001, 0.01],  # Learning rate values to search
             'batch_size': [256]    # Batch size values to search
         }
 
         # Manually specify other hyperparameters
-        epochs_cv = 1      # Number of epochs during cross-validation
+        epochs_cv = 50      # Number of epochs during cross-validation
         epochs_final = 700  # Number of epochs during final training
         optimizer = 'Adam'
         loss_function = 'MSE'
