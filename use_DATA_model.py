@@ -7,10 +7,10 @@ from main_DATA import ShipSpeedPredictorModel  # Import the model class from you
 
 if __name__ == "__main__":
     # Define file paths and parameters
-    model_state_dict_path = 'saved_DATA/Adam_tanh_Optimizer/final_model.pth'
-    scaler_X_path = 'saved_DATA/Adam_tanh_Optimizer/scaler_X.save'
-    scaler_y_path = 'saved_DATA/Adam_tanh_Optimizer/scaler_y.save'
-    test_data_file = 'data/Aframax/P data_20200213-20200726_Democritos.csv'  # Update if necessary
+    model_state_dict_path = 'saved_DATA/Hera_Adam_relu_Optimizer/final_model.pth'
+    scaler_X_path = 'saved_DATA/Hera_Adam_relu_Optimizer/scaler_X.save'
+    scaler_y_path = 'saved_DATA/Hera_Adam_relu_Optimizer/scaler_y.save'
+    test_data_file = 'data/Hera/P data_20220607-20230127_Democritos.csv'  # Update if necessary
     keep_columns_file = 'columns_to_keep.txt'
     target_column = 'Power'
     output_csv_file = 'power_predictions.csv'
@@ -33,7 +33,7 @@ if __name__ == "__main__":
 
         # Load the best hyperparameters (optional, for consistency)
         import json
-        with open('saved_DATA/Adam_tanh_Optimizer/best_hyperparameters.json', 'r') as f:
+        with open('saved_DATA/Hera_Adam_relu_Optimizer/best_hyperparameters.json', 'r') as f:
             best_params = json.load(f)
 
         optimizer = 'Adam'        # Should match what was used during training

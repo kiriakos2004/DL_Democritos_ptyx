@@ -1,0 +1,1 @@
+{"lr": 0.001, "batch_size": 256, "alpha": 1.0, "beta": 0.0001, "gamma": 0.1}

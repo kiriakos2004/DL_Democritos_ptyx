@@ -52,12 +52,12 @@ class ShipSpeedPredictorModel:
             self.fc7 = nn.Linear(16, 1)
 
         def forward(self, x):
-            x = torch.tanh(self.fc1(x))
-            x = torch.tanh(self.fc2(x))
-            x = torch.tanh(self.fc3(x))
-            x = torch.tanh(self.fc4(x))
-            x = torch.tanh(self.fc5(x))
-            x = torch.tanh(self.fc6(x))
+            x = torch.relu(self.fc1(x))
+            x = torch.relu(self.fc2(x))
+            x = torch.relu(self.fc3(x))
+            x = torch.relu(self.fc4(x))
+            x = torch.relu(self.fc5(x))
+            x = torch.relu(self.fc6(x))
             x = self.fc7(x)
             return x
 
@@ -290,7 +290,7 @@ class ShipSpeedPredictorModel:
 if __name__ == "__main__":
     # Load data using the DataProcessor class
     data_processor = DataProcessor(
-        file_path='data/Aframax/P data_20200213-20200726_Democritos.csv',
+        file_path='data/Hera/P data_20220607-20230127_Democritos.csv',
         target_column='Power',
         keep_columns_file='columns_to_keep.txt'
     )
@@ -311,7 +311,7 @@ if __name__ == "__main__":
         # Manually specify other hyperparameters
         epochs_cv = 50      # Number of epochs during cross-validation
         epochs_final = 700  # Number of epochs during final training
-        optimizer = 'Adam'
+        optimizer = 'LBFGS'
         loss_function = 'MSE'
 
         # Perform hyperparameter search with cross-validation

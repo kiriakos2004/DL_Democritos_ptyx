@@ -37,19 +37,22 @@ class ShipSpeedPredictorModel:
 
         # Constants for physics-based loss
         self.rho = 1025.0      # Water density (kg/m³)
-        self.S = 9950.0        # Wetted surface area in m²
-        self.S_APP = 150.0     # Wetted surface area of appendages in m²
-        self.A_t = 50.0        # Transom area in m²
-        self.L = 230.0         # Ship length in meters
         self.nu = 1e-6         # Kinematic viscosity of water (m²/s)
         self.g = 9.81          # Gravitational acceleration (m/s²)
+
+        # Ship dimensions (adjust as per your ship's specifications)
+        self.S = 9950.0        # Wetted surface area in m²
+        self.L = 229.0         # Ship length in meters
+        self.B = 32.0          # Beam (width) of the ship in meters
+        self.A_front = 850.0   # Frontal area exposed to air (m²)
+        self.S_APP = 150.0     # Wetted surface area of appendages in m²
 
         # Set random seed for reproducibility
         torch.manual_seed(42)
 
         # Initialize the model
         self.model = self.ShipSpeedPredictor(input_size).to(self.device)
-        initialize_weights(self.model)  # Apply custom initialization
+        initialize_weights(self.model)
 
     class ShipSpeedPredictor(nn.Module):
         def __init__(self, input_size):
@@ -63,13 +66,11 @@ class ShipSpeedPredictorModel:
             self.fc7 = nn.Linear(16, 1)
 
             # Define trainable physics parameters with proper initialization
-            self.k_wave = nn.Parameter(torch.tensor(np.random.uniform(1e-8, 1e-4), dtype=torch.float32))
-            self.STWAVE1 = nn.Parameter(torch.tensor(np.random.uniform(0.0001, 0.01), dtype=torch.float32))
-            self.alpha_trim = nn.Parameter(torch.tensor(np.random.uniform(0.05, 0.2), dtype=torch.float32))
-            self.C_a = nn.Parameter(torch.tensor(np.random.uniform(0.0001, 0.001), dtype=torch.float32))      
-            self.k = nn.Parameter(torch.tensor(np.random.uniform(0.05, 0.5), dtype=torch.float32))
-            self.L_t = nn.Parameter(torch.tensor(np.random.uniform(10, 20), dtype=torch.float32))
-            self.eta_D = nn.Parameter(torch.tensor(np.random.uniform(0.5, 2), dtype=torch.float32))
+            self.k_wave = nn.Parameter(torch.tensor(np.random.uniform(0.1, 0.4), dtype=torch.float32))
+            self.k_aw = nn.Parameter(torch.tensor(np.random.uniform(0.5, 2.0), dtype=torch.float32))
+            self.k_appendage = nn.Parameter(torch.tensor(np.random.uniform(0.05, 0.1), dtype=torch.float32))
+            self.eta_D = nn.Parameter(torch.tensor(np.random.uniform(0.5, 0.7), dtype=torch.float32))
+            self.C_d = nn.Parameter(torch.tensor(np.random.uniform(0.8, 1.0), dtype=torch.float32))
 
         def forward(self, x):
             x = torch.relu(self.fc1(x))
@@ -149,65 +150,60 @@ class ShipSpeedPredictorModel:
         return unscaled_loader
 
     def calculate_physics_loss(self, V, trim, predicted_power_scaled, 
-                               H_s, theta_ship, theta_wave, data_processor):
-        """Calculate the physics-based loss, including weather impact."""
+                            H_s, theta_ship, theta_wave, data_processor):
+        """Calculate the physics-based loss using updated analytical relations."""
         
-        # Extract physics parameters from the model
-        STWAVE1 = self.model.STWAVE1
-        alpha_trim = self.model.alpha_trim
-        C_a = self.model.C_a
-        k = self.model.k
-        L_t = self.model.L_t
-        eta_D = self.model.eta_D
-        k_wave = self.model.k_wave
+        # Extract trainable physics parameters from the model
+        k_wave = self.model.k_wave          # For wave-making resistance R_w
+        k_aw = self.model.k_aw              # For added resistance due to waves R_aw
+        eta_D = self.model.eta_D            # Propulsive efficiency
+        k_appendage = self.model.k_appendage  # Fraction of R_f for appendage resistance
+        C_d = self.model.C_d                # Air resistance drag coefficient
+
+        # Constants
+        rho_air = 1.225  # Air density (kg/m³)
 
         # Ensure V and H_s are not zero to avoid division by zero errors
         V = torch.clamp(V, min=1e-5)
         H_s = torch.clamp(H_s, min=0.0)
 
         # Calculate Reynolds number Re
-        Re = V * self.L / self.nu  # Using class attributes
+        Re = V * self.L / self.nu
         Re = torch.clamp(Re, min=1e-5)
 
         # Calculate frictional resistance coefficient C_f using ITTC-1957 formula
         C_f = 0.075 / (torch.log10(Re) - 2) ** 2
 
-        # Frictional Resistance (R_F)
-        R_F = 0.5 * self.rho * V**2 * self.S * C_f
+        # Frictional Resistance (R_f)
+        R_f = 0.5 * self.rho * V**2 * self.S * C_f
 
-        # Wave-Making Resistance (R_W)
-        STWAVE2 = 1 + alpha_trim * trim
-        C_W = STWAVE1 * STWAVE2
-        R_W = 0.5 * self.rho * V**2 * self.S * C_W
+        # Wave-Making Resistance (R_w)
+        R_w = k_wave * R_f
 
-        # Appendage Resistance (R_APP)
-        R_APP = 0.5 * self.rho * V**2 * self.S_APP * C_f
+        # Air Resistance (R_a)
+        R_a = 0.5 * rho_air * V**2 * self.A_front * C_d
 
-        # Calculate F_nt (Transom Froude Number)
-        F_nt = V / torch.sqrt(self.g * L_t)
-
-        # Transom Stern Resistance (R_TR)
-        R_TR = 0.5 * self.rho * V**2 * self.A_t * (1 - F_nt)
-
-        # Correlation Allowance Resistance (R_C)
-        R_C = 0.5 * self.rho * V**2 * self.S * C_a
+        # Appendage Resistance (R_appendage)
+        R_appendage = k_appendage * R_f
 
         # Compute relative wave direction in degrees
         theta_rel_wave = torch.abs(theta_wave - theta_ship) % 360
         theta_rel_wave = torch.where(theta_rel_wave > 180, 360 - theta_rel_wave, theta_rel_wave)
         theta_rel_wave_rad = theta_rel_wave * torch.pi / 180  # Convert to radians
 
-        # Compute added resistance due to waves
-        R_AW = 0.5 * self.rho * V**2 * self.S * k_wave * H_s**2 * (1 + torch.cos(theta_rel_wave_rad))
+        # Added Resistance due to Waves (R_aw)
+        R_aw = k_aw * self.rho * self.g * H_s**2 * self.B * torch.cos(theta_rel_wave_rad)**2
 
-        # Total Resistance (R_T)
-        R_T = R_F * (1 + k) + R_W + R_APP + R_TR + R_C + R_AW        
+        # Total Resistance (R_t)
+        R_t = R_f + R_w + R_a + R_aw + R_appendage
 
         # Calculate shaft power (P_S)
-        P_S = ((V * R_T) / eta_D) / 1000  # Convert to kilowatts if necessary
+        P_S = (V * R_t) / eta_D  # Power in watts
+
+        # Convert power to kilowatts if necessary
+        P_S = P_S / 1000  # Convert to kilowatts
 
         # Scaling P_S using the same scaler as the target variable
-        # Assuming data_processor.scaler_y has 'mean_' and 'scale_' attributes compatible with torch
         scaler_y_mean = torch.tensor(data_processor.scaler_y.mean_, dtype=V.dtype, device=V.device)
         scaler_y_scale = torch.tensor(data_processor.scaler_y.scale_, dtype=V.dtype, device=V.device)
         P_S_scaled = (P_S - scaler_y_mean) / scaler_y_scale  # Element-wise scaling
@@ -216,7 +212,6 @@ class ShipSpeedPredictorModel:
         physics_loss = (predicted_power_scaled.squeeze() - P_S_scaled) ** 2
 
         return physics_loss, P_S_scaled
-
     def train(self, train_loader, unscaled_data_loader, feature_indices, data_processor, 
               val_loader=None, val_unscaled_loader=None, live_plot=False):
         """Function to train the model, now including the physics-based loss."""
@@ -631,7 +626,7 @@ if __name__ == "__main__":
         # Manually specify other hyperparameters
         epochs_cv = 50        # Number of epochs during cross-validation
         epochs_final = 700   # Number of epochs during final training
-        optimizer = 'LBFGS'   # Set optimizer to LBFGS
+        optimizer = 'Adam'
         loss_function = 'MSE'
 
         # Perform hyperparameter search with cross-validation
