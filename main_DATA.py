@@ -8,9 +8,8 @@ import numpy as np
 import pandas as pd
 from itertools import product
 from tqdm import tqdm
-from read_data import DataProcessor
+from read_data_fragment import DataProcessor
 import matplotlib.pyplot as plt
-import joblib
 import json
 
 # Custom weight initialization function
@@ -41,7 +40,7 @@ class ShipSpeedPredictorModel:
         initialize_weights(self.model)  # Apply custom initialization
 
     class ShipSpeedPredictor(nn.Module):
-        def __init__(self, input_size):
+        def __init__(self, input_size, dropout_rate=0.2):
             super().__init__()
             self.fc1 = nn.Linear(input_size, 512)
             self.fc2 = nn.Linear(512, 256)
@@ -51,12 +50,20 @@ class ShipSpeedPredictorModel:
             self.fc6 = nn.Linear(32, 16)
             self.fc7 = nn.Linear(16, 1)
 
+            # Add Dropout layers
+            self.dropout = nn.Dropout(p=dropout_rate)
+
         def forward(self, x):
             x = torch.relu(self.fc1(x))
+            x = self.dropout(x)
             x = torch.relu(self.fc2(x))
+            x = self.dropout(x)
             x = torch.relu(self.fc3(x))
+            x = self.dropout(x)
             x = torch.relu(self.fc4(x))
+            x = self.dropout(x)
             x = torch.relu(self.fc5(x))
+            x = self.dropout(x)
             x = torch.relu(self.fc6(x))
             x = self.fc7(x)
             return x
@@ -107,14 +114,18 @@ class ShipSpeedPredictorModel:
 
         return loader
 
-    def train(self, train_loader, val_loader=None, live_plot=False):
-        """Function to train the model."""
+    def train(self, train_loader, val_loader=None, live_plot=False, patience=10, min_delta=1e-4):
+        """Function to train the model with early stopping."""
         optimizer = self.get_optimizer()
         loss_function = self.get_loss_function()
 
         # Lists to store loss values
         train_losses = []
         val_losses = []
+
+        # Early stopping variables
+        best_val_loss = float('inf')
+        epochs_no_improve = 0
 
         # Initialize live plotting if enabled
         if live_plot:
@@ -161,6 +172,17 @@ class ShipSpeedPredictorModel:
                 avg_val_loss = val_running_loss / len(val_loader)
                 val_losses.append(avg_val_loss)
                 print(f"Epoch [{epoch+1}/{self.epochs}], Training Loss: {avg_train_loss:.8f}, Validation Loss: {avg_val_loss:.8f}")
+
+                # Early stopping logic
+                if avg_val_loss < best_val_loss - min_delta:
+                    best_val_loss = avg_val_loss
+                    epochs_no_improve = 0
+                else:
+                    epochs_no_improve += 1
+
+                if epochs_no_improve >= patience:
+                    print(f"Early stopping triggered after {epoch+1} epochs.")
+                    break
             else:
                 val_losses.append(None)
                 print(f"Epoch [{epoch+1}/{self.epochs}], Training Loss: {avg_train_loss:.8f}")
@@ -209,7 +231,7 @@ class ShipSpeedPredictorModel:
 
     def cross_validate(self, X, y, data_processor, k_folds=5):
         """Function to perform cross-validation on the model using training and validation data."""
-        kfold = KFold(n_splits=k_folds, shuffle=True, random_state=42)
+        kfold = KFold(n_splits=k_folds)
         fold_results = []
 
         for fold, (train_idx, val_idx) in enumerate(kfold.split(X)):
@@ -283,14 +305,14 @@ class ShipSpeedPredictorModel:
 
         # Save the best hyperparameters to a JSON file
         with open('best_hyperparameters.json', 'w') as f:
-            json.dump(best_params, f)
+            json.dump({'best_params': best_params, 'best_loss': best_loss}, f)
 
         return best_params, best_loss
 
 if __name__ == "__main__":
     # Load data using the DataProcessor class
     data_processor = DataProcessor(
-        file_path='data/Hera/P data_20220607-20230127_Democritos.csv',
+        file_path='data/Aframax/P data_20200213-20200726_Democritos.csv',
         target_column='Power',
         keep_columns_file='columns_to_keep.txt'
     )
@@ -305,13 +327,13 @@ if __name__ == "__main__":
         # Define hyperparameter grid (search for learning rate and batch size only)
         param_grid = {
             'lr': [0.001, 0.01],  # Learning rate values to search
-            'batch_size': [256]    # Batch size values to search
+            'batch_size': [512]    # Batch size values to search
         }
 
         # Manually specify other hyperparameters
         epochs_cv = 50      # Number of epochs during cross-validation
-        epochs_final = 700  # Number of epochs during final training
-        optimizer = 'LBFGS'
+        epochs_final = 500  # Number of epochs during final training
+        optimizer = 'Adam'
         loss_function = 'MSE'
 
         # Perform hyperparameter search with cross-validation
@@ -321,7 +343,7 @@ if __name__ == "__main__":
 
         # Split X_train and y_train into training and validation sets for final training
         X_train_final, X_val_final, y_train_final, y_val_final = train_test_split(
-            X_train, y_train, test_size=0.2, random_state=42
+            X_train, y_train, test_size=0.1, shuffle=True
         )
 
         # Train the final model with the best hyperparameters
@@ -341,12 +363,37 @@ if __name__ == "__main__":
         # Train the final model on the training set, with validation data and live plotting enabled
         final_model.train(final_train_loader, val_loader=final_val_loader, live_plot=True)
 
-        # Save the trained model's state_dict
-        torch.save(final_model.model.state_dict(), 'final_model.pth')
+        # Prepare the test data for predictions
+        X_test_unscaled = X_test_unscaled[X_train_unscaled.columns]
+        X_test_scaled = data_processor.scaler_X.transform(X_test_unscaled)
+        X_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32).to(final_model.device)
 
-        # Save the DataProcessor's scaler parameters
-        joblib.dump(data_processor.scaler_X, 'scaler_X.save')
-        joblib.dump(data_processor.scaler_y, 'scaler_y.save')
+        # Make predictions on the test set
+        final_model.model.eval()
+        with torch.no_grad():
+            y_pred_scaled = final_model.model(X_test_tensor)
+            y_pred_scaled_np = y_pred_scaled.cpu().numpy()
+            y_pred = data_processor.inverse_transform_y(y_pred_scaled_np).flatten()
 
-        # Evaluate the final model on the test set (after hyperparameter tuning)
-        final_model.evaluate(X_test, y_test, dataset_type="Test", data_processor=data_processor)
+        # Get actual power values from the unscaled test target
+        y_actual = y_test_unscaled.values.flatten()
+
+        # Create a DataFrame with actual and predicted power
+        results_df = pd.DataFrame({
+            'Actual Power': y_actual,
+            'Predicted Power': y_pred
+        })
+
+        # Save the results to a CSV file
+        output_csv_file = 'power_predictions.csv'
+        results_df.to_csv(output_csv_file, index=False)
+        print(f"Predictions saved to {output_csv_file}")
+
+        # Calculate and print evaluation metrics
+        rmse = np.sqrt(np.mean((y_actual - y_pred) ** 2))
+        mae = np.mean(np.abs(y_actual - y_pred))
+        print(f"Test RMSE: {rmse:.4f}")
+        print(f"Test MAE: {mae:.4f}")
+
+    else:
+        print("Error in loading and preparing data.")

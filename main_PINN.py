@@ -10,8 +10,8 @@ import pandas as pd
 from itertools import product
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-import joblib
 import json
+from read_data_fragment import DataProcessor
 
 # Custom weight initialization function
 def initialize_weights(model):
@@ -23,65 +23,6 @@ def initialize_weights(model):
             if layer.bias is not None:
                 nn.init.zeros_(layer.bias)
 
-class DataProcessor:
-    def __init__(self, file_path, target_column, keep_columns_file):
-        self.file_path = file_path
-        self.target_column = target_column
-        self.keep_columns_file = keep_columns_file
-        self.scaler_X = None
-        self.scaler_y = None
-
-    def load_and_prepare_data(self):
-        # Load data from CSV file
-        try:
-            data = pd.read_csv(self.file_path)
-            print(f"Data loaded from {self.file_path}")
-        except FileNotFoundError:
-            print(f"File {self.file_path} not found.")
-            return None
-
-        # Read the columns to keep from the file
-        try:
-            with open(self.keep_columns_file, 'r') as f:
-                keep_columns = [line.strip() for line in f]
-            print(f"Columns to keep loaded from {self.keep_columns_file}")
-        except FileNotFoundError:
-            print(f"File {self.keep_columns_file} not found.")
-            return None
-
-        # Filter data to keep only the specified columns
-        data = data[keep_columns]
-
-        # Drop rows with missing values
-        data = data.dropna()
-
-        # Split data into features (X) and target (y)
-        X = data.drop(columns=[self.target_column])
-        y = data[self.target_column]
-
-        # Split data into training and test sets
-        X_train_unscaled, X_test_unscaled, y_train_unscaled, y_test_unscaled = train_test_split(
-            X, y, test_size=0.2, random_state=42
-        )
-
-        # Initialize scalers
-        self.scaler_X = StandardScaler()
-        self.scaler_y = StandardScaler()
-
-        # Scale features and target
-        X_train = pd.DataFrame(self.scaler_X.fit_transform(X_train_unscaled), columns=X.columns)
-        X_test = pd.DataFrame(self.scaler_X.transform(X_test_unscaled), columns=X.columns)
-        y_train = pd.Series(self.scaler_y.fit_transform(y_train_unscaled.values.reshape(-1, 1)).flatten())
-        y_test = pd.Series(self.scaler_y.transform(y_test_unscaled.values.reshape(-1, 1)).flatten())
-
-        print("Data has been scaled and split into training and test sets.")
-
-        return X_train, X_test, X_train_unscaled, X_test_unscaled, y_train, y_test, y_train_unscaled, y_test_unscaled
-
-    def inverse_transform_y(self, y_scaled):
-        """Inverse transform the scaled target variable."""
-        return self.scaler_y.inverse_transform(y_scaled)
-
 class ShipSpeedPredictorModel:
     def __init__(self, input_size, lr=0.001, epochs=100, batch_size=32,
                  optimizer_choice='Adam', loss_function_choice='MSE', alpha=1.0,
@@ -91,9 +32,9 @@ class ShipSpeedPredictorModel:
         self.batch_size = batch_size  # Part of hyperparameter search
         self.optimizer_choice = optimizer_choice  # Manually specified
         self.loss_function_choice = loss_function_choice  # Manually specified
-        self.alpha = alpha  # Weight for data loss, hyperparameter
-        self.beta = beta    # Weight for physics loss, hyperparameter
-        self.gamma = gamma  # Weight for boundary condition loss, hyperparameter
+        self.alpha = alpha  # Weight for data loss
+        self.beta = beta    # Weight for PDE residual loss
+        self.gamma = gamma  # Weight for boundary condition loss
         self.device = self.get_device()
         self.debug_mode = debug_mode  # Enable or disable debug mode
 
@@ -172,7 +113,6 @@ class ShipSpeedPredictorModel:
         else:
             batch_size = self.batch_size
 
-        # Create DataLoader for batching
         dataset = TensorDataset(X_tensor, y_tensor)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 
@@ -200,11 +140,9 @@ class ShipSpeedPredictorModel:
     def sample_boundary_points(self, num_points, X_train_unscaled, feature_indices,
                                data_processor):
         """Function to sample boundary points for enforcing boundary conditions."""
-        # Get min and max values from unscaled data
         x_min = X_train_unscaled.min()
         x_max = X_train_unscaled.max()
 
-        # Initialize a DataFrame to hold unscaled boundary points
         x_boundary_unscaled = pd.DataFrame(columns=X_train_unscaled.columns)
 
         # Set 'Speed-Through-Water' to zero
@@ -217,7 +155,6 @@ class ShipSpeedPredictorModel:
                 x_boundary_unscaled[col] = np.random.uniform(low=x_min[col], high=x_max[col],
                                                              size=num_points)
 
-        # Scale the boundary points
         x_boundary_scaled = data_processor.scaler_X.transform(x_boundary_unscaled)
         x_boundary = torch.tensor(x_boundary_scaled, dtype=torch.float32, device=self.device)
         x_boundary.requires_grad = True
@@ -237,7 +174,7 @@ class ShipSpeedPredictorModel:
             retain_graph=True
         )[0]
 
-        # Get index and values of 'Speed-Through-Water' (V)
+        # Get index of 'Speed-Through-Water' (V)
         V_idx = feature_indices['Speed-Through-Water']
         V = x_collocation[:, V_idx].view(-1, 1)
 
@@ -266,7 +203,7 @@ class ShipSpeedPredictorModel:
         residual = outputs_V_unscaled - (3 * outputs_unscaled) / V_unscaled_safe
 
         # Rescale the residual to prevent large values
-        scaling_factor = torch.tensor(1e6, dtype=torch.float32, device=self.device)
+        scaling_factor = torch.tensor(1e4, dtype=torch.float32, device=self.device)
         residual_normalized = residual / scaling_factor
 
         return residual_normalized
@@ -353,9 +290,6 @@ class ShipSpeedPredictorModel:
 
             # Compute average losses for the epoch
             avg_total_loss = running_loss / total_batches
-            avg_data_loss = running_data_loss / total_batches
-            avg_pde_loss = running_pde_loss / total_batches
-            avg_boundary_loss = running_boundary_loss / total_batches
 
             # Store losses for plotting
             train_losses.append(avg_total_loss)
@@ -427,8 +361,8 @@ class ShipSpeedPredictorModel:
         return loss.item()
 
     def cross_validate(self, X, X_unscaled, y, feature_indices, data_processor, k_folds=5):
-        """Function to perform cross-validation on the model using training and validation data."""
-        kfold = KFold(n_splits=k_folds, shuffle=True, random_state=42)
+        """Function to perform cross-validation on the model."""
+        kfold = KFold(n_splits=k_folds)
         fold_results = []
 
         for fold, (train_idx, val_idx) in enumerate(kfold.split(X)):
@@ -499,7 +433,7 @@ class ShipSpeedPredictorModel:
                 alpha=alpha,
                 beta=beta,
                 gamma=gamma,
-                debug_mode=False  # Disable debug mode during hyperparameter search
+                debug_mode=False
             )
 
             # Perform cross-validation
@@ -517,15 +451,15 @@ class ShipSpeedPredictorModel:
         print(f"\nBest parameters: {best_params}, with average validation loss: "
               f"{best_loss:.8f}")
 
-        # Save the best hyperparameters to a text file
-        with open("best_hyperparameters.txt", "w") as f:
-            f.write(f"Best parameters: {best_params}\n")
-            f.write(f"Best average validation loss: {best_loss:.8f}\n")
+        # Save the best hyperparameters to a JSON file
+        with open('best_hyperparameters.json', 'w') as f:
+            json.dump({'best_params': best_params, 'best_loss': best_loss}, f)
 
         return best_params, best_loss
 
+
 if __name__ == "__main__":
-    # Load data using the DataProcessor class
+    # Load data using the DataProcessor class from read_data_fragment.py
     data_processor = DataProcessor(
         file_path='data/Hera/P data_20220607-20230127_Democritos.csv',
         target_column='Power',
@@ -556,15 +490,15 @@ if __name__ == "__main__":
 
         # Define hyperparameter grid (search for learning rate, batch size, alpha, beta, gamma)
         param_grid = {
-            'lr': [0.001, 0.01],         # Learning rate values to search
-            'batch_size': [256],         # Batch size values to search
-            'alpha': [0.9, 1.0],              # Alpha values to search
-            'beta': [1e-4, 1e-2],              # Beta values to search
-            'gamma': [0.1, 0.2]          # Gamma values to search
+            'lr': [0.001],
+            'batch_size': [512],
+            'alpha': [0.9],
+            'beta': [1e-2],
+            'gamma': [0.1]
         }
 
         # Manually specify other hyperparameters
-        epochs_cv = 50     # Number of epochs during cross-validation
+        epochs_cv = 1     # Number of epochs during cross-validation
         epochs_final = 700  # Number of epochs during final training
         optimizer = 'Adam'
         loss_function = 'MSE'
@@ -578,22 +512,22 @@ if __name__ == "__main__":
         # Split X_train and y_train into training and validation sets for final training
         X_train_final, X_val_final, X_train_unscaled_final, X_val_unscaled_final, \
             y_train_final, y_val_final = train_test_split(
-                X_train, X_train_unscaled, y_train, test_size=0.2, random_state=42
+                X_train, X_train_unscaled, y_train,
+                test_size=0.2
             )
 
-        # Create the final model instance with adjusted weights
-        # Adjust the beta value as per our discussion
+        # Create the final model instance
         final_model = ShipSpeedPredictorModel(
             input_size=X_train.shape[1],
-            lr=best_params['lr'],                    # Best learning rate
-            epochs=epochs_final,                     # Number of epochs for final training
-            optimizer_choice=optimizer,              # Manually specified
-            loss_function_choice=loss_function,      # Manually specified
-            batch_size=best_params['batch_size'],    # Best batch size
-            alpha=best_params['alpha'],              # Data loss weight
-            beta=best_params['beta'],                # Adjusted beta
-            gamma=best_params['gamma'],              # Best gamma
-            debug_mode=False                         # Disable debug mode for final training
+            lr=best_params['lr'],
+            epochs=epochs_final,
+            optimizer_choice=optimizer,
+            loss_function_choice=loss_function,
+            batch_size=best_params['batch_size'],
+            alpha=best_params['alpha'],
+            beta=best_params['beta'],
+            gamma=best_params['gamma'],
+            debug_mode=False
         )
 
         # Prepare the data loaders for the final model
@@ -606,16 +540,39 @@ if __name__ == "__main__":
             val_loader=final_val_loader, live_plot=True
         )
 
-        # Save the trained model's state_dict
-        torch.save(final_model.model.state_dict(), 'final_model.pth')
-
-        # Save the DataProcessor's scaler parameters
-        joblib.dump(data_processor.scaler_X, 'scaler_X.save')
-        joblib.dump(data_processor.scaler_y, 'scaler_y.save')
-
-        # Save the best hyperparameters
-        with open('best_hyperparameters.json', 'w') as f:
-            json.dump(best_params, f)
-
         # Evaluate the final model on the test set
         final_model.evaluate(X_test, y_test, dataset_type="Test", data_processor=data_processor)
+
+        # Make predictions on the test set
+        X_test_unscaled = X_test_unscaled[X_train_unscaled.columns]
+        X_test_scaled = data_processor.scaler_X.transform(X_test_unscaled)
+        X_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32).to(final_model.device)
+
+        final_model.model.eval()
+        with torch.no_grad():
+            y_pred_scaled = final_model.model(X_test_tensor)
+            y_pred_scaled_np = y_pred_scaled.cpu().numpy()
+            y_pred = data_processor.inverse_transform_y(y_pred_scaled_np).flatten()
+
+        # Get actual power values from the unscaled test target
+        y_actual = y_test_unscaled.values.flatten()
+
+        # Create a DataFrame with actual and predicted power
+        results_df = pd.DataFrame({
+            'Actual Power': y_actual,
+            'Predicted Power': y_pred
+        })
+
+        # Save the results to a CSV file
+        output_csv_file = 'power_predictions.csv'
+        results_df.to_csv(output_csv_file, index=False)
+        print(f"Predictions saved to {output_csv_file}")
+
+        # Calculate and print evaluation metrics (RMSE, MAE)
+        rmse = np.sqrt(np.mean((y_actual - y_pred) ** 2))
+        mae = np.mean(np.abs(y_actual - y_pred))
+        print(f"Test RMSE: {rmse:.4f}")
+        print(f"Test MAE: {mae:.4f}")
+
+    else:
+        print("Error in loading and preparing data.")

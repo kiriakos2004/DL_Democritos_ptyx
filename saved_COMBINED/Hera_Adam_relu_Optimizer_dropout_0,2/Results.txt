@@ -1,2 +1,0 @@
-Test Loss: 1.70625246
-Test RMSE: 1440.0387
