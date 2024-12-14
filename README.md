@@ -6,17 +6,17 @@ This project belongs to master's thesis of the Inter-Institutional MSc entitled 
 
 ## Repository Structure
 
-- read_data.py: Reads and preprocesses the data, handling missing values, scaling features, and splitting the dataset into training and testing sets.
+- read_data_fragment.py: Reads and preprocesses the data, handling missing values, scaling features, and splitting the dataset into training and testing sets. Also it implements a further split of the training dataset in order to reduce it for testing purposes.
 - main_DATA.py: Implements a purely data-driven neural network model for predicting ship propulsion power. Includes hyperparameter tuning and model evaluation.
-- main_PGNN.py: Implements a Physics-Guided Neural Network (PGNN) that incorporates physical laws related to ship resistance into the training process.
 - main_PINN.py: Implements a Physics-Informed Neural Network (PINN) that incorporates PDEs related to ship resistance into the training process.
+- main_COMBINED.py: Implements a Physics-Guided Neural Network (PGNN) that incorporates physical laws related to ship resistance into the training process on top of the PINN.
 
 ## Features
 
 - Data Preprocessing: Handles missing values and scales features using StandardScaler.
 - Data-Driven Model: A multi-layer neural network trained solely on data to predict propulsion power.
-- Physics-Guided Neural Network: Enhances the data-driven model by adding a physics-based loss term derived from ship resistance equations.
 - Physics-Informed Neural Network: Enhances the data-driven model by adding a PDE loss term derived from ship resistance partial derivative equations.
+- Combined Neural Network: Enhances the Physics-Informed model by adding a physics-based loss term derived from ship resistance equations.
 - Hyperparameter Tuning: Uses grid search and k-fold cross-validation to find optimal learning rates and batch sizes.
 - Model Evaluation: Provides training and validation loss during training and evaluates the final model on a test set.
 
