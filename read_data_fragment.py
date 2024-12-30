@@ -13,8 +13,8 @@ class DataProcessor:
         random_state=42,
         fill_missing_with_median=True, 
         exclude_missing_Hs=True, 
-        train_fraction=0.2, 
-        test_segment=3
+        train_fraction=1.0, 
+        test_segment=5
     ):
         """
         file_path: Path to the CSV dataset.
