@@ -8,15 +8,13 @@ This project belongs to master's thesis of the Inter-Institutional MSc entitled 
 
 - read_data_fragment.py: Reads and preprocesses the data, handling missing values, scaling features, and splitting the dataset into training and testing sets. Also it implements a further split of the training dataset in order to reduce it for testing purposes.
 - main_DATA.py: Implements a purely data-driven neural network model for predicting ship propulsion power. Includes hyperparameter tuning and model evaluation.
-- main_PINN.py: Implements a Physics-Informed Neural Network (PINN) that incorporates PDEs related to ship resistance into the training process.
-- main_COMBINED.py: Implements a Physics-Guided Neural Network that incorporates physical laws related to ship resistance into the training process on top of the PINN.
+- main_COMBINED.py: Implements a Physics-Informed Neural Network that incorporates PDEs related to ship resistance and respective analytical equations related to ship resistance into the training process.
 
 ## Features
 
 - Data Preprocessing: Handles missing values and scales features using StandardScaler.
 - Data-Driven Model: A multi-layer neural network trained solely on data to predict propulsion power.
-- Physics-Informed Neural Network: Enhances the data-driven model by adding a PDE loss term derived from ship resistance partial derivative equations.
-- Combined Neural Network: Enhances the Physics-Informed model by adding a physics-based loss term derived from ship resistance equations.
+- Physics-Informed Neural Network: Enhances the data-driven model by adding a PDE loss term derived from ship resistance partial derivative equations, enhances it by adding a physics-based loss term derived from ship resistance equations and also adds a boundary loss term that "restricts" results based on ships trial data.
 - Hyperparameter Tuning: Uses grid search and k-fold cross-validation to find optimal learning rates and batch sizes.
 - Model Evaluation: Provides training and validation loss during training and evaluates the final model on a test set.
 
@@ -51,7 +49,7 @@ Update the file_path variable in the scripts if your data is located elsewhere.
 
 Before running the models, read and preprocess the data:
 
-        python read_data.py
+        python read_data_fragment.py
 
 This will:
 
@@ -61,18 +59,18 @@ This will:
 - Split the data into features and target variable.
 - Scale the features using StandardScaler.
 - Split the data into training and testing sets.
-
+- Introduce a train_fraction term that takes values from o to 1 and is used to keep a fragment of the initial train dataset.
+  
 ### Check functions used for Physical Loss of PGNN
 
 In order to check if the equations used at the physical part of loss accurately predict power:
         
-        power_charts.py
+        physics_model.py
         
  This script will:
 
 - Use unscaled data from data loader to Calculate the power needed.
-- Use Bayesian optimization to find the best static parameters that are used to calculate Resistance
-- Display in a common diagramm the calculated power and the power specified on the data in order to visualy compare the allingment.
+- Create a csv file logging the calculated power and the power specified on the data in order to compare the allingment.
 
 ### Running the Data-Driven Model
 
@@ -91,31 +89,20 @@ This script will:
 
 To train and evaluate the PINN:
 
-        python main_PINN.py
+        python main_COMBINED.py
 
 This script:
 
 - Loads and preprocesses the data.
 - Incorporates Physical Laws into the Model by defining the governing Partial Differential Equations (PDEs) related to fluid dynamics around the ship hull and computes PDE residuals using automatic differentiation to ensure the model adheres to the underlying physical principles.
+- Incorporates physical laws related to ship resistance into the loss function.
+- Adds a boundary loss term that penalties the model for producing results that dont allign with ships sea trial tests (make use of extreme values)
 - Performs hyperparameter tuning similar to the data-driven model.
 - Trains the final PINN model with the best hyperparameters.
 - Evaluates the PINN on the test set in terms of RMSE.  
 
-### Running the Physics-Guided Neural Network (PGNN)
 
-To train and evaluate the PGNN:
-
-        python main_PGNN.py
-
-This script:
-
-- Loads and preprocesses the data.
-- Incorporates physical laws related to ship resistance into the loss function.
-- Performs hyperparameter tuning similar to the data-driven model.
-- Trains the final PGNN model with the best hyperparameters.
-- Evaluates the PGNN on the test set in terms of RMSE.
-
-## Formulation of a PDE for the Problem (PINN)
+## Formulation of a PDE for the Problem
 
 Assuming we can model the resistance R as a function of speed V and other variables, we will consider a PDE like:
 
@@ -127,9 +114,9 @@ Where:
 - P is the Power (the target variable of the data model).
 - V is the Speed-Through-Water.
 
-## Physics-Based Loss Function (PGNN)
+## Physics-Based Loss Function
 
-The PGNN incorporates a physics-based loss term calculated using ship resistance equations:
+The PINN incorporates a physics-based loss term calculated using ship resistance equations:
 
 - Frictional Resistance
   
@@ -179,6 +166,13 @@ Finally the physics-based loss is computed as the squared difference between the
 
 ![Screenshot_2](https://github.com/user-attachments/assets/88e88f14-73b3-4232-92ed-693ce98a8c87)
 
+## Boundary Loss
+
+The model is penalized when it produces results that do not adhere to two extreme conditions derived from the ship’s sea trials:
+
+- Condition 1: P ~ 0 for speeds in [0, 1) knots
+- Condition 2: P ≥ 8000 kW when V >= 13 knots
+  
 ## Hyperparameter Tuning
 
 Both models perform hyperparameter tuning a predifined Hyperparameter Grid using k-fold cross-validation (default is 5 folds).
