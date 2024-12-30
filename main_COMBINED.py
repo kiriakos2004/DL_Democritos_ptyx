@@ -45,8 +45,7 @@ class ShipSpeedPredictorModel:
         self.S = 9950.0        # Wetted surface area in m²
         self.L = 229.0         # Ship length in meters
         self.B = 32.0          # Beam (width) of the ship in meters
-        self.A_front = 850.0   # Frontal area exposed to air (m²)
-        self.S_APP = 150.0     # Wetted surface area of appendages in m²
+        self.k = 0.9           # Empirical correction
 
         # Set random seed for reproducibility
         torch.manual_seed(42)
@@ -58,24 +57,22 @@ class ShipSpeedPredictorModel:
     class ShipSpeedPredictor(nn.Module):
         def __init__(self, input_size, dropout_rate=0.2):
             super().__init__()
-            self.fc1 = nn.Linear(input_size, 512)
-            self.fc2 = nn.Linear(512, 256)
-            self.fc3 = nn.Linear(256, 128)
-            self.fc4 = nn.Linear(128, 64)
-            self.fc5 = nn.Linear(64, 32)
-            self.fc6 = nn.Linear(32, 16)
-            self.fc7 = nn.Linear(16, 1)
+            self.fc1 = nn.Linear(input_size, 1024)
+            self.fc2 = nn.Linear(1024, 512)
+            self.fc3 = nn.Linear(512, 256)
+            self.fc4 = nn.Linear(256, 128)
+            self.fc5 = nn.Linear(128, 64)
+            self.fc6 = nn.Linear(64, 32)
+            self.fc7 = nn.Linear(32, 16)
+            self.fc8 = nn.Linear(16, 1)
 
             # Add Dropout layers
             self.dropout = nn.Dropout(p=dropout_rate)
 
-            # Define trainable physics parameters
-            self.k_wave = nn.Parameter(torch.tensor(np.random.uniform(0.1, 0.4), dtype=torch.float32))
-            self.k_aw = nn.Parameter(torch.tensor(np.random.uniform(0.5, 2.0), dtype=torch.float32))
-            self.k_appendage = nn.Parameter(torch.tensor(np.random.uniform(0.05, 0.1), dtype=torch.float32))
-            self.eta_D = nn.Parameter(torch.tensor(np.random.uniform(0.5, 0.7), dtype=torch.float32))
-            self.C_d = nn.Parameter(torch.tensor(np.random.uniform(0.8, 1.0), dtype=torch.float32))
-            self.k_trim = nn.Parameter(torch.tensor(0.01, dtype=torch.float32))
+            # Define trainable physics parameters (Only C_wave and eta_D)
+            self.C_wave = nn.Parameter(torch.tensor(np.random.uniform(0.005, 0.2), dtype=torch.float32))
+            self.eta_D = nn.Parameter(torch.tensor(np.random.uniform(0.6, 0.95), dtype=torch.float32))
+            self.C_resid = nn.Parameter(torch.tensor(0.03, dtype=torch.float32))
 
         def forward(self, x):
             x = torch.relu(self.fc1(x))
@@ -89,7 +86,9 @@ class ShipSpeedPredictorModel:
             x = torch.relu(self.fc5(x))
             x = self.dropout(x)
             x = torch.relu(self.fc6(x))
-            x = self.fc7(x)
+            x = self.dropout(x)
+            x = torch.relu(self.fc7(x))            
+            x = self.fc8(x)
             return x
 
     def get_device(self):
@@ -171,24 +170,6 @@ class ShipSpeedPredictorModel:
         x_collocation.requires_grad = True
         return x_collocation
 
-    def sample_boundary_points(self, num_points, X_unscaled, feature_indices, data_processor):
-        """Sample boundary points for enforcing boundary conditions from the given unscaled data domain."""
-        x_min = X_unscaled.min()
-        x_max = X_unscaled.max()
-
-        x_boundary_unscaled = pd.DataFrame(columns=X_unscaled.columns)
-        V_col = X_unscaled.columns[feature_indices['Speed-Through-Water']]
-        x_boundary_unscaled[V_col] = np.zeros(num_points)
-
-        for col in X_unscaled.columns:
-            if col != V_col:
-                x_boundary_unscaled[col] = np.random.uniform(low=x_min[col], high=x_max[col], size=num_points)
-
-        x_boundary_scaled = data_processor.scaler_X.transform(x_boundary_unscaled)
-        x_boundary = torch.tensor(x_boundary_scaled, dtype=torch.float32, device=self.device)
-        x_boundary.requires_grad = True
-        return x_boundary
-
     def compute_pde_residual(self, x_collocation, feature_indices, data_processor):
         """Compute PDE residuals at collocation points with scaling adjustments."""
         x_collocation.requires_grad_(True)
@@ -218,59 +199,128 @@ class ShipSpeedPredictorModel:
         outputs_V_unscaled = (outputs_V * std_P) / std_V
 
         residual = outputs_V_unscaled - (3 * outputs_unscaled) / V_unscaled_safe
-        scaling_factor = torch.tensor(1e2, dtype=torch.float32, device=self.device)
+        scaling_factor = torch.tensor(1e5, dtype=torch.float32, device=self.device)
         residual_normalized = residual / scaling_factor
 
         return residual_normalized
 
-    def compute_boundary_loss(self, x_boundary, scale=100):
-        """Compute boundary condition loss (enforcing P=0 when V=0)."""
-        outputs_boundary = self.model(x_boundary)
-        boundary_loss = torch.mean(outputs_boundary**2) / scale
+    def compute_boundary_loss(self, feature_indices, data_processor, X_unscaled, scale=1e8):
+        V_idx = feature_indices['Speed-Through-Water']
+        x_min = X_unscaled.min()
+        x_max = X_unscaled.max()
+
+        num_points = self.batch_size
+
+        mean_P = torch.tensor(data_processor.scaler_y.mean_, dtype=torch.float32, device=self.device)
+        std_P = torch.tensor(data_processor.scaler_y.scale_, dtype=torch.float32, device=self.device)
+
+        # ============================================
+        # Condition 1: P ~ 0 for speeds in [0, 1) knot
+        # ============================================
+        V_col = X_unscaled.columns[V_idx]
+        x_boundary_unscaled_low_speed = pd.DataFrame(columns=X_unscaled.columns)
+        # Random speed in range [0, 1) for boundary
+        x_boundary_unscaled_low_speed[V_col] = np.random.uniform(0.0, 1.0, size=num_points)
+
+        # For other columns, sample random in [min, max]
+        for col in X_unscaled.columns:
+            if col != V_col:
+                x_boundary_unscaled_low_speed[col] = np.random.uniform(
+                    low=x_min[col], high=x_max[col], size=num_points
+                )
+
+        x_boundary_low_speed_scaled = data_processor.scaler_X.transform(x_boundary_unscaled_low_speed)
+        x_boundary_low_speed = torch.tensor(x_boundary_low_speed_scaled, dtype=torch.float32, device=self.device)
+        outputs_low_speed = self.model(x_boundary_low_speed)
+
+        # We want outputs_low_speed ~ 0, so penalize squared power
+        boundary_loss_low_speed = torch.mean(outputs_low_speed**2) / scale
+
+        # ===============================================
+        # Condition 2: P ≥ 8000 kW when V >= 13 knots
+        # ===============================================
+        V_ineq_knots = 13.0
+        P_min = 8000.0  # kW
+
+        x_boundary_unscaled_ineq = pd.DataFrame(columns=X_unscaled.columns)
+        x_boundary_unscaled_ineq[V_col] = np.full(num_points, V_ineq_knots)
+        for col in X_unscaled.columns:
+            if col != V_col:
+                x_boundary_unscaled_ineq[col] = np.random.uniform(
+                    low=x_min[col], high=x_max[col], size=num_points
+                )
+
+        x_boundary_ineq_scaled = data_processor.scaler_X.transform(x_boundary_unscaled_ineq)
+        x_boundary_ineq = torch.tensor(x_boundary_ineq_scaled, dtype=torch.float32, device=self.device)
+        outputs_ineq = self.model(x_boundary_ineq)
+
+        # Convert model outputs back to original scale (kW)
+        outputs_ineq_unscaled = outputs_ineq * std_P + mean_P
+
+        # Penalize if outputs_ineq_unscaled < 8000
+        violation = torch.relu(P_min - outputs_ineq_unscaled)
+        boundary_loss_ineq = torch.mean(violation**2) / scale
+
+        # Combine boundary losses
+        boundary_loss = boundary_loss_low_speed + boundary_loss_ineq
         return boundary_loss
 
     def calculate_physics_loss(self, V, predicted_power_scaled, trim,
                                H_s, theta_ship, theta_wave, data_processor):
-        """Calculate the physics-based loss combining all resistances."""
-        k_wave = self.model.k_wave
-        k_aw = self.model.k_aw
-        eta_D = self.model.eta_D
-        k_appendage = self.model.k_appendage
-        k_trim = self.model.k_trim
+        """Calculate the physics-based loss combining frictional, residuary, and wave-induced resistances."""
+        C_wave = self.model.C_wave  # Wave Resistance Coefficient
+        eta_D = self.model.eta_D    # Propulsion System Efficiency
+        C_resid = self.model.C_resid # Residuary Resistance
 
         V = torch.clamp(V, min=1e-5)
         H_s = torch.clamp(H_s, min=0.0)
         trim = torch.clamp(trim, min=-5.0, max=5.0)
 
+        # Reynolds Number
         Re = V * self.L / self.nu
         Re = torch.clamp(Re, min=1e-5)
 
+        # Frictional Resistance Coefficient
         C_f = 0.075 / (torch.log10(Re) - 2) ** 2
-        S_effective = self.S * (1 + k_trim * trim)
-        R_f = 0.5 * self.rho * V**2 * S_effective * C_f
-        R_w = k_wave * R_f
-        R_appendage = k_appendage * R_f
 
+        # Frictional Resistance
+        R_f = (1 + self.k) * 0.5 * self.rho * V**2 * self.S * C_f
+
+        # Residuary Resistance
+        #C_resid = 0.03  # Assumed constant
+        R_resid = C_resid * R_f
+
+        # Wave-Induced Resistance
+        A = H_s / 2  # Wave amplitude
+        S_wave = self.L * self.B  # Wetted surface area affected by waves
+
+        # Relative Wave Angle
         theta_rel_wave = torch.abs(theta_wave - theta_ship) % 360
         theta_rel_wave = torch.where(theta_rel_wave > 180, 360 - theta_rel_wave, theta_rel_wave)
         theta_rel_wave_rad = theta_rel_wave * torch.pi / 180
 
-        R_aw = k_aw * self.rho * self.g * H_s**2 * self.B * torch.cos(theta_rel_wave_rad)**2
-        R_t = R_f + R_w + R_aw + R_appendage
-        P_S = (V * R_t) / eta_D
-        P_S = P_S / 1000
+        R_wave = 0.5 * self.rho * self.g * A * S_wave * C_wave * torch.cos(theta_rel_wave_rad)**2
 
+        # Total Resistance
+        R_total = R_f + R_resid + R_wave
+
+        # Required Propulsion Power
+        P_total = (V * R_total) / eta_D  # Power in Watts
+        P_total = P_total / 1000
+
+        # Scaling
         scaler_y_mean = torch.tensor(data_processor.scaler_y.mean_, dtype=V.dtype, device=V.device)
         scaler_y_scale = torch.tensor(data_processor.scaler_y.scale_, dtype=V.dtype, device=V.device)
-        P_S_scaled = (P_S - scaler_y_mean) / scaler_y_scale
+        P_total_scaled = (P_total - scaler_y_mean) / scaler_y_scale
 
-        physics_loss = torch.mean((predicted_power_scaled.squeeze() - P_S_scaled) ** 2)
-        return physics_loss, P_S_scaled
+        # Physics Loss (MSE)
+        physics_loss = torch.mean((predicted_power_scaled.squeeze() - P_total_scaled) ** 2)
+        return physics_loss, P_total_scaled
 
     @staticmethod
     def compute_total_loss(data_loss, physics_loss, pde_loss, boundary_loss,
-                           data_loss_coeff=1.0, physics_loss_coeff=0.0,
-                           pde_loss_coeff=1.0, boundary_loss_coeff=0.0):
+                           data_loss_coeff=1.0, physics_loss_coeff=1.0,
+                           pde_loss_coeff=1.0, boundary_loss_coeff=1.0):
         """Compute the total weighted loss."""
         return (data_loss_coeff * data_loss) + \
                (physics_loss_coeff * physics_loss) + \
@@ -340,10 +390,10 @@ class ShipSpeedPredictorModel:
 
                 x_collocation = self.sample_collocation_points(self.batch_size, X_train_unscaled, data_processor)
                 pde_residual = self.compute_pde_residual(x_collocation, feature_indices, data_processor)
-                pde_loss = torch.mean(pde_residual**2)/1000
+                pde_loss = torch.mean(pde_residual**2)
 
-                x_boundary = self.sample_boundary_points(self.batch_size, X_train_unscaled, feature_indices, data_processor)
-                boundary_loss = self.compute_boundary_loss(x_boundary)
+                # Use the new boundary loss method
+                boundary_loss = self.compute_boundary_loss(feature_indices, data_processor, X_train_unscaled)
 
                 total_loss = self.compute_total_loss(data_loss, physics_loss, pde_loss, boundary_loss)
 
@@ -431,17 +481,14 @@ class ShipSpeedPredictorModel:
         theta_ship_idx = feature_indices.get('True_Heading')
         theta_wave_idx = feature_indices.get('Mean_Wave_Direction')
 
-        # Keep no_grad for the main evaluation steps
         with torch.no_grad():
             for (X_batch, y_batch), (X_unscaled_batch,) in zip(data_loader, unscaled_data_loader):
                 X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
                 X_unscaled_batch = X_unscaled_batch.to(self.device)
 
-                # Forward pass without gradient tracking
                 outputs = self.model(X_batch)
                 data_loss = loss_function(outputs, y_batch)
 
-                # Extract relevant unscaled features
                 V = X_unscaled_batch[:, speed_idx] * 0.51444
                 trim = X_unscaled_batch[:, fore_draft_idx] - X_unscaled_batch[:, aft_draft_idx]
 
@@ -456,18 +503,15 @@ class ShipSpeedPredictorModel:
 
                 physics_loss, _ = self.calculate_physics_loss(V, outputs, trim, H_s, theta_ship, theta_wave, data_processor)
 
-                # PDE computations require gradients, so enable them temporarily
+                # PDE computations require gradients, enable them temporarily
                 with torch.enable_grad():
-                    # Detach from no_grad environment by moving out of it
                     x_collocation = self.sample_collocation_points(len(X_batch), X_val_unscaled, data_processor)
                     x_collocation.requires_grad_(True)
                     pde_residual = self.compute_pde_residual(x_collocation, feature_indices, data_processor)
                     pde_loss = torch.mean(pde_residual**2)
 
-                # Boundary loss does not require gradients from PDE computations
-                # so it can remain under no_grad
-                x_boundary = self.sample_boundary_points(len(X_batch), X_val_unscaled, feature_indices, data_processor)
-                boundary_loss = self.compute_boundary_loss(x_boundary)
+                # Compute boundary loss with the same approach used in training
+                boundary_loss = self.compute_boundary_loss(feature_indices, data_processor, X_val_unscaled)
 
                 total_loss = self.compute_total_loss(data_loss, physics_loss, pde_loss, boundary_loss)
 
@@ -483,13 +527,12 @@ class ShipSpeedPredictorModel:
         avg_boundary_loss = running_boundary_loss / total_batches
         avg_physics_loss = running_physics_loss / total_batches
 
-        # Print detailed loss breakdown for validation
         print(f"Validation Loss Breakdown: "
-            f"Total: {avg_total_loss:.8f}, "
-            f"Data: {avg_data_loss:.8f}, "
-            f"PDE: {avg_pde_loss:.8f}, "
-            f"Boundary: {avg_boundary_loss:.8f}, "
-            f"Physics: {avg_physics_loss:.8f}")
+              f"Total: {avg_total_loss:.8f}, "
+              f"Data: {avg_data_loss:.8f}, "
+              f"PDE: {avg_pde_loss:.8f}, "
+              f"Boundary: {avg_boundary_loss:.8f}, "
+              f"Physics: {avg_physics_loss:.8f}")
 
         return avg_total_loss, avg_data_loss, avg_pde_loss, avg_boundary_loss, avg_physics_loss
 
@@ -585,7 +628,6 @@ class ShipSpeedPredictorModel:
 
 
 if __name__ == "__main__":
-    # Use DataProcessor from read_data_fragment.py
     data_processor = DataProcessor(
         file_path='data/Aframax/P data_20200213-20200726_Democritos.csv',
         target_column='Power',
@@ -596,7 +638,6 @@ if __name__ == "__main__":
         X_train, X_test, X_train_unscaled, X_test_unscaled, y_train, y_test, \
             y_train_unscaled, y_test_unscaled = result
 
-        # Assign X_train_unscaled to data_processor
         data_processor.X_train_unscaled = X_train_unscaled
 
         print(f"X_train shape: {X_train.shape}")
@@ -619,7 +660,7 @@ if __name__ == "__main__":
         }
 
         epochs_cv = 1
-        epochs_final = 3000
+        epochs_final = 1000
         optimizer = 'Adam'
         loss_function = 'MSE'
 
@@ -628,6 +669,7 @@ if __name__ == "__main__":
             param_grid, epochs_cv, optimizer, loss_function, data_processor, k_folds=5
         )
 
+        # Split final training/validation
         X_train_final, X_val_final, X_train_unscaled_final, X_val_unscaled_final, \
             y_train_final, y_val_final = train_test_split(
                 X_train, X_train_unscaled, y_train, test_size=0.1
@@ -660,9 +702,16 @@ if __name__ == "__main__":
         with open('best_hyperparameters.json', 'w') as f:
             json.dump(best_params, f)
 
+        # Evaluate on test set
         final_model.evaluate(X_test, y_test, dataset_type="Test", data_processor=data_processor)
 
+        # ------------------------------------------------------
+        # Prepare for final CSV output with extra columns
+        # ------------------------------------------------------
+        # 1) Ensure consistent column order
         X_test_unscaled = X_test_unscaled[X_train_unscaled.columns]
+
+        # 2) Convert X_test_unscaled for inference
         X_test_scaled = data_processor.scaler_X.transform(X_test_unscaled)
         X_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32).to(final_model.device)
 
@@ -670,15 +719,53 @@ if __name__ == "__main__":
         with torch.no_grad():
             y_pred_scaled = final_model.model(X_test_tensor)
             y_pred_scaled_np = y_pred_scaled.cpu().numpy()
+            # Convert scaled predictions back to original power units
             y_pred = data_processor.inverse_transform_y(y_pred_scaled_np).flatten()
 
         y_actual = y_test_unscaled.values.flatten()
 
+        # ------------------------------------------------------
+        # Gather unscaled test columns
+        # ------------------------------------------------------
+        speed_unscaled = X_test_unscaled['Speed-Through-Water'].values
+
+        # Draft columns (already in unscaled domain)
+        draft_fore_unscaled = X_test_unscaled['Draft_Fore'].values
+        draft_aft_unscaled = X_test_unscaled['Draft_Aft'].values
+
+        # Significant Wave Height (if present in your columns)
+        if 'Significant_Wave_Height' in X_test_unscaled.columns:
+            hs_unscaled = X_test_unscaled['Significant_Wave_Height'].values
+        else:
+            # If it's not in the columns, fill with zeros or some default
+            hs_unscaled = np.zeros(len(X_test_unscaled))
+
+        # Compute relative wave angle from True_Heading & Mean_Wave_Direction
+        # If they exist in the DataFrame
+        if 'True_Heading' in X_test_unscaled.columns and 'Mean_Wave_Direction' in X_test_unscaled.columns:
+            theta_ship_unscaled = X_test_unscaled['True_Heading'].values
+            theta_wave_unscaled = X_test_unscaled['Mean_Wave_Direction'].values
+
+            theta_rel_angle = np.abs(theta_wave_unscaled - theta_ship_unscaled) % 360
+            theta_rel_angle = np.where(theta_rel_angle > 180, 360 - theta_rel_angle, theta_rel_angle)
+        else:
+            # Fallback if columns are missing
+            theta_rel_angle = np.zeros(len(X_test_unscaled))
+
+        # ------------------------------------------------------
+        # Build final DataFrame with extra columns
+        # ------------------------------------------------------
         results_df = pd.DataFrame({
+            'Speed-Through-Water': speed_unscaled,
+            'Draft_Fore': draft_fore_unscaled,
+            'Draft_Aft': draft_aft_unscaled,
+            'Significant_Wave_Height': hs_unscaled,
+            'Relative_Wave_Angle': theta_rel_angle,
             'Actual Power': y_actual,
             'Predicted Power': y_pred
         })
 
+        # Save to CSV
         output_csv_file = 'power_predictions.csv'
         results_df.to_csv(output_csv_file, index=False)
         print(f"Predictions saved to {output_csv_file}")

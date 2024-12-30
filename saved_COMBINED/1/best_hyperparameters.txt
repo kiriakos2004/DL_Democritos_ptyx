@@ -1,2 +1,0 @@
-Best parameters: {'lr': 0.001, 'batch_size': 512, 'gamma': 0.01}
-Best average validation loss: 0.20405700

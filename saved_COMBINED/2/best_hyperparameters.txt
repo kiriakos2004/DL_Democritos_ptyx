@@ -1,2 +1,0 @@
-Best parameters: {'lr': 0.001, 'batch_size': 1024, 'gamma': 0.003, 'initial_alpha': 1.5, 'initial_beta_physics': 0.09, 'initial_beta_pde': 0.001}
-Best average validation loss: 0.08657683
