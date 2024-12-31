@@ -107,53 +107,56 @@ Where:
 
 The PINN incorporates a physics-based loss term calculated using ship resistance equations:
 
-- Frictional Resistance
-  
-![image](https://github.com/user-attachments/assets/7ff9b3d1-fb57-4cf5-a885-3f4148322d84)
+### Frictional Resistance
+
+![image](https://github.com/user-attachments/assets/9a426761-bc2d-4d29-8b45-926fc6892217)
 
 It is calculated using the ITTC-1957 formula, the frictional resistance coefficient accounts for the friction between the ship's hull and the water.
-  
-- Wave-Making Resistance
 
-  ![image](https://github.com/user-attachments/assets/5dbf4b12-984d-4e44-8a36-ad1290fcdb90)
+where:
 
-Wave-making resistance is caused by the energy lost in generating waves as the ship moves through the water. It is influenced by the ship's speed and trim.
-  
-- Appendage Resistance
+   - k: Form factor accounting for additional resistance due to the ship's shape
+   - ρ: Density of water in kg/m3
+   - V: Speed in m/s
+   - S: Wetted surface area in m2
+   - Cf: Frictional resistance coefficient
 
-![image](https://github.com/user-attachments/assets/99d428c4-6b61-4697-9a93-ebfde8f9ca95)
+### Residuary Resistance
 
-Appendage resistance accounts for the additional resistance from appendages such as rudders, shafts, and propellers.
+![image](https://github.com/user-attachments/assets/56c0a073-780b-4cfc-9211-cac2e5a63b56)
 
-- Transom Stern Resistance
+where:
 
-![image](https://github.com/user-attachments/assets/9e77f536-ec0c-488f-a6fb-bb5ce40776f0)
+   - Cresid: Residuary resistance coefficient
+   - Rfriction: Frictional resistance in N
+     
+### Wave-Induced Resistance
 
-Transom stern resistance is significant for ships with a flat stern (transom) and is calculated using the transom Froude number.
+ ![image](https://github.com/user-attachments/assets/e03f2537-8b2e-4344-9212-ac0277703c09)
 
-- Correlation Allowance Resistance
+where:
 
-![image](https://github.com/user-attachments/assets/21007a57-e06d-407b-8fb2-d0b841bcad94)
+   - ρ: Density of water in kg/m3
+   - g: Acceleration due to gravity
+   - A: Wave amplitude, calculated as:
 
-This is an empirical correction factor to account for additional resistance not captured by other components.
+     ![image](https://github.com/user-attachments/assets/6b6c57f5-0a00-4fbf-a54e-b72a9bb0a0a9)
 
-- Added Resistance due to waves
+     where SWH is the significant wave height in m
+   - Swave: Wetted surface area affected by waves in m2
+   - Cwave: Wave resistance coefficient
 
-![image](https://github.com/user-attachments/assets/c84ba982-d45f-4eed-af88-1195b8d277b1)
 
-Where: 
+Finally the physics-based loss is computed using the total resistance and propulsive efficiency:
 
-![image](https://github.com/user-attachments/assets/7ff1d96c-18eb-426d-8bfe-3e72edc4a105)
+![image](https://github.com/user-attachments/assets/48cba486-fed4-4ccf-844c-6110ab7ff0ae)
 
-and:
+where:
 
-![image](https://github.com/user-attachments/assets/dd9a3f4d-2fb0-4d84-875e-ce887a87d553)
+   - Rtotal: Total resistance in N
+   - V: Speed in m/s
+   - η: Propulsion efficiency (unitless)
 
-![image](https://github.com/user-attachments/assets/13c194a4-48f0-4dc9-b7f7-1bd48662a21c)
-
-Finally the physics-based loss is computed as the squared difference between the predicted power and the power calculated using the total resistance and propulsive efficiency:
-
-![Screenshot_2](https://github.com/user-attachments/assets/88e88f14-73b3-4232-92ed-693ce98a8c87)
 
 ## Boundary Loss
 
