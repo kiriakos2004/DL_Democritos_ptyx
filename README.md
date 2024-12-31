@@ -7,9 +7,12 @@ This project belongs to master's thesis of the Inter-Institutional MSc entitled 
 ## Repository Structure
 
 - read_data_fragment.py: Reads and preprocesses the data, handling missing values, scaling features, and splitting the dataset into training and testing sets. Also it implements a further split of the training dataset in order to reduce it for testing purposes.
-- main_DATA.py: Implements a purely data-driven neural network model for predicting ship propulsion power. Includes hyperparameter tuning and model evaluation.
-- main_COMBINED.py: Implements a Physics-Informed Neural Network that incorporates PDEs related to ship resistance and respective analytical equations related to ship resistance into the training process.
-
+- main_COMBINED.py: Implements a Physics-Informed Neural Network that incorporates PDEs related to ship resistance and respective analytical equations related to ship resistance into the training process. Includes hyperparameter tuning and model evaluation. this code 4 coeficients are introduced, each of them corresponds to a different loss term that is summed to form the total loss that is used at the training proceess of the NN.
+        - data_loss_coeff: defines the importance of the data loss (if set to 1 and all others to 0, corresponds to a purely data driven model set as baseline)
+        - physics_loss_coeff: defines the importance of the physics loss
+        - pde_loss_coeff: defines the importance of the partial differential equation loss
+        - boundary_loss_coeff: defines the importance of the boundary conditions loss
+  
 ## Features
 
 - Data Preprocessing: Handles missing values and scales features using StandardScaler.
@@ -72,19 +75,6 @@ In order to check if the equations used at the physical part of loss accurately 
 - Use unscaled data from data loader to Calculate the power needed.
 - Create a csv file logging the calculated power and the power specified on the data in order to compare the allingment.
 
-### Running the Data-Driven Model
-
-To train and evaluate the purely data-driven neural network model:
-        
-        python main_DATA.py
-
-This script will:
-
-- Load and preprocess the data using DataProcessor.
-- Perform hyperparameter tuning (learning rate and batch size) using k-fold cross-validation.
-- Train the final model with the best hyperparameters.
-- Evaluate the model on the test set in terms of RMSE.
-
 ### Running the Physics-Informed Neural Network (PINN)
 
 To train and evaluate the PINN:
@@ -97,10 +87,9 @@ This script:
 - Incorporates Physical Laws into the Model by defining the governing Partial Differential Equations (PDEs) related to fluid dynamics around the ship hull and computes PDE residuals using automatic differentiation to ensure the model adheres to the underlying physical principles.
 - Incorporates physical laws related to ship resistance into the loss function.
 - Adds a boundary loss term that penalties the model for producing results that dont allign with ships sea trial tests (make use of extreme values)
-- Performs hyperparameter tuning similar to the data-driven model.
+- Perform hyperparameter tuning (learning rate and batch size) using k-fold cross-validation.
 - Trains the final PINN model with the best hyperparameters.
 - Evaluates the PINN on the test set in terms of RMSE.  
-
 
 ## Formulation of a PDE for the Problem
 
