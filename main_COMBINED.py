@@ -319,8 +319,8 @@ class ShipSpeedPredictorModel:
 
     @staticmethod
     def compute_total_loss(data_loss, physics_loss, pde_loss, boundary_loss,
-                           data_loss_coeff=1.0, physics_loss_coeff=0.0,
-                           pde_loss_coeff=0.0, boundary_loss_coeff=0.0):
+                           data_loss_coeff=1.0, physics_loss_coeff=1.0,
+                           pde_loss_coeff=1.0, boundary_loss_coeff=1.0):
         """Compute the total weighted loss."""
         return (data_loss_coeff * data_loss) + \
                (physics_loss_coeff * physics_loss) + \
@@ -660,7 +660,7 @@ if __name__ == "__main__":
         }
 
         epochs_cv = 1
-        epochs_final = 400
+        epochs_final = 1000
         optimizer = 'Adam'
         loss_function = 'MSE'
 
