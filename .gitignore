@@ -8,6 +8,7 @@ Scripts/
 share/
 old_code/
 results/
+Clustering/
 
 # Ignore pyvenv.cfg
 pyvenv.cfg

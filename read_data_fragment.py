@@ -14,7 +14,7 @@ class DataProcessor:
         fill_missing_with_median=True, 
         exclude_missing_Hs=True, 
         train_fraction=1.0, 
-        test_segment=7
+        test_segment=0
     ):
         """
         file_path: Path to the CSV dataset.

@@ -660,7 +660,7 @@ if __name__ == "__main__":
         }
 
         epochs_cv = 1
-        epochs_final = 1000
+        epochs_final = 2000
         optimizer = 'Adam'
         loss_function = 'MSE'
 
