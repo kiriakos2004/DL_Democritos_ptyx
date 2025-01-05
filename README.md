@@ -93,7 +93,7 @@ This script:
 
 ## Formulation of a PDE for the Problem
 
-Assuming we can model the resistance R as a function of speed V and other variables, we will consider a PDE like:
+Assuming we can model the resistance R, and thus the required power P, as a function of speed V and other variables, we will consider a PDE like:
 
 ![Screenshot_black_letters_white_background](https://github.com/user-attachments/assets/6a7bd284-da46-4581-bdf5-c870e4800bd1)
 
