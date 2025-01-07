@@ -14,7 +14,7 @@ class DataProcessor:
         fill_missing_with_median=True, 
         exclude_missing_Hs=True, 
         train_fraction=1.0, 
-        test_segment=0
+        test_segment=7
     ):
         """
         file_path: Path to the CSV dataset.
@@ -217,7 +217,7 @@ class DataProcessor:
 
 
 if __name__ == "__main__":
-    file_path = 'data/Aframax/P data_20200213-20200726_Democritos.csv'
+    file_path = 'data/Dan/P data_20210428-20211111_Democritos.csv'
     target_column = 'Power'
     keep_columns_file = 'columns_to_keep.txt'
 
@@ -227,7 +227,7 @@ if __name__ == "__main__":
         keep_columns_file=keep_columns_file,
         fill_missing_with_median=True,
         exclude_missing_Hs=True,
-        train_fraction=1.0,
+        train_fraction=0.2,
         test_segment=9
     )
 

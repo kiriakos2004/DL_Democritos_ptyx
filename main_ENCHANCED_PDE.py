@@ -13,6 +13,8 @@ import matplotlib.pyplot as plt
 import joblib
 import json
 from read_data_fragment import DataProcessor
+import copy
+import math
 
 # Custom weight initialization function
 def initialize_weights(model):
@@ -25,27 +27,31 @@ def initialize_weights(model):
                 nn.init.zeros_(layer.bias)
 
 class ShipSpeedPredictorModel:
-    def __init__(self, input_size, lr=0.001, epochs=100, batch_size=32,
-                 optimizer_choice='Adam', loss_function_choice='MSE',
-                 debug_mode=False):
+    def __init__(self, 
+                 input_size, 
+                 lr=0.001, 
+                 epochs=100, 
+                 batch_size=32,
+                 optimizer_choice='Adam', 
+                 loss_function_choice='MSE',
+                 debug_mode=False,
+                 early_stopping=False,
+                 patience=10,
+                 min_delta=0.0001
+                 ):
+        
         self.lr = lr
         self.epochs = epochs
         self.batch_size = batch_size
         self.optimizer_choice = optimizer_choice
         self.loss_function_choice = loss_function_choice
         self.device = self.get_device()
-        self.debug_mode = debug_mode  # Enable or disable debug mode
+        self.debug_mode = debug_mode
 
-        # Constants for physics-based loss
-        self.rho = 1025.0      # Water density (kg/m³)
-        self.nu = 1e-6         # Kinematic viscosity of water (m²/s)
-        self.g = 9.81          # Gravitational acceleration (m/s²)
-
-        # Ship dimensions (adjust as per your ship's specifications)
-        self.S = 9950.0        # Wetted surface area in m²
-        self.L = 229.0         # Ship length in meters
-        self.B = 32.0          # Beam (width) of the ship in meters
-        self.k = 0.9           # Empirical correction
+        # Early Stopping settings
+        self.early_stopping = early_stopping
+        self.patience = patience
+        self.min_delta = min_delta
 
         # Set random seed for reproducibility
         torch.manual_seed(42)
@@ -66,13 +72,16 @@ class ShipSpeedPredictorModel:
             self.fc7 = nn.Linear(32, 16)
             self.fc8 = nn.Linear(16, 1)
 
-            # Add Dropout layers
+            # Dropout layers
             self.dropout = nn.Dropout(p=dropout_rate)
 
-            # Define trainable physics parameters (Only C_wave and eta_D)
-            self.C_wave = nn.Parameter(torch.tensor(np.random.uniform(0.0005, 0.001), dtype=torch.float32))
-            self.eta_D = nn.Parameter(torch.tensor(np.random.uniform(0.8, 0.95), dtype=torch.float32))
-            self.C_resid = nn.Parameter(torch.tensor(np.random.uniform(0.04, 0.07), dtype=torch.float32))
+            # PDE coefficients for wave height, trim, etc.
+            self.gamma = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
+            self.delta = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
+
+            # Trainable exponent parameter (raw_beta) 
+            # We'll enforce beta >= 2.0 using beta = 2.0 + exp(raw_beta)
+            self.raw_beta = nn.Parameter(torch.tensor(math.log(0.5), dtype=torch.float32))
 
         def forward(self, x):
             x = torch.relu(self.fc1(x))
@@ -87,7 +96,7 @@ class ShipSpeedPredictorModel:
             x = self.dropout(x)
             x = torch.relu(self.fc6(x))
             x = self.dropout(x)
-            x = torch.relu(self.fc7(x))            
+            x = torch.relu(self.fc7(x))
             x = self.fc8(x)
             return x
 
@@ -171,40 +180,104 @@ class ShipSpeedPredictorModel:
         return x_collocation
 
     def compute_pde_residual(self, x_collocation, feature_indices, data_processor):
-        """Compute PDE residuals at collocation points with scaling adjustments."""
-        x_collocation.requires_grad_(True)
-        outputs = self.model(x_collocation)
 
+        x_collocation.requires_grad_(True)
+        outputs = self.model(x_collocation)  # scaled power: shape [batch, 1]
+
+        # Partial derivatives wrt each input feature
         outputs_x = torch.autograd.grad(
             outputs=outputs,
             inputs=x_collocation,
             grad_outputs=torch.ones_like(outputs),
             create_graph=True,
             retain_graph=True
-        )[0]
+        )[0]  # shape [batch, num_features]
 
+        # Identify columns
         V_idx = feature_indices['Speed-Through-Water']
-        V = x_collocation[:, V_idx].view(-1, 1)
+        Hs_idx = feature_indices.get('Significant_Wave_Height', None)
+        fore_idx = feature_indices.get('Draft_Fore', None)
+        aft_idx = feature_indices.get('Draft_Aft', None)
 
+        # Extract partial derivatives (scaled)
+        dP_dV_scaled = outputs_x[:, V_idx].view(-1, 1)
+
+        if Hs_idx is not None:
+            dP_dHs_scaled = outputs_x[:, Hs_idx].view(-1, 1)
+        else:
+            dP_dHs_scaled = torch.zeros_like(dP_dV_scaled)
+
+        if fore_idx is not None and aft_idx is not None:
+            dP_dFore_scaled = outputs_x[:, fore_idx].view(-1, 1)
+            dP_dAft_scaled  = outputs_x[:, aft_idx].view(-1, 1)
+            # dP/dTrim = dP/dFore - dP/dAft
+            dP_dTrim_scaled = dP_dFore_scaled - dP_dAft_scaled
+        else:
+            dP_dTrim_scaled = torch.zeros_like(dP_dV_scaled)
+
+        # Unscale P
         mean_P = torch.tensor(data_processor.scaler_y.mean_, dtype=torch.float32, device=self.device)
         std_P = torch.tensor(data_processor.scaler_y.scale_, dtype=torch.float32, device=self.device)
+        P_unscaled = outputs * std_P + mean_P  # shape [batch, 1]
+
+        # Unscale partial derivatives: (dP_scaled/dX_scaled) * (std_P / std_X)
         mean_V = torch.tensor(data_processor.scaler_X.mean_[V_idx], dtype=torch.float32, device=self.device)
-        std_V = torch.tensor(data_processor.scaler_X.scale_[V_idx], dtype=torch.float32, device=self.device)
+        std_V  = torch.tensor(data_processor.scaler_X.scale_[V_idx], dtype=torch.float32, device=self.device)
 
-        outputs_unscaled = outputs * std_P + mean_P
-        V_unscaled = V * std_V + mean_V
-        V_unscaled_safe = torch.clamp(V_unscaled, min=1e-2)
+        dP_dV_unscaled = (dP_dV_scaled * std_P) / std_V
 
-        outputs_V = outputs_x[:, V_idx].view(-1, 1)
-        outputs_V_unscaled = (outputs_V * std_P) / std_V
+        if Hs_idx is not None:
+            mean_Hs = torch.tensor(data_processor.scaler_X.mean_[Hs_idx], dtype=torch.float32, device=self.device)
+            std_Hs  = torch.tensor(data_processor.scaler_X.scale_[Hs_idx], dtype=torch.float32, device=self.device)
+            dP_dHs_unscaled = (dP_dHs_scaled * std_P) / std_Hs
+        else:
+            dP_dHs_unscaled = torch.zeros_like(dP_dV_unscaled)
 
-        residual = outputs_V_unscaled - (3 * outputs_unscaled) / V_unscaled_safe
+        if fore_idx is not None and aft_idx is not None:
+            mean_Fore = torch.tensor(data_processor.scaler_X.mean_[fore_idx], dtype=torch.float32, device=self.device)
+            std_Fore  = torch.tensor(data_processor.scaler_X.scale_[fore_idx], dtype=torch.float32, device=self.device)
+            mean_Aft = torch.tensor(data_processor.scaler_X.mean_[aft_idx], dtype=torch.float32, device=self.device)
+            std_Aft  = torch.tensor(data_processor.scaler_X.scale_[aft_idx], dtype=torch.float32, device=self.device)
+
+            dP_dFore_unscaled = (dP_dFore_scaled * std_P) / std_Fore
+            dP_dAft_unscaled  = (dP_dAft_scaled  * std_P) / std_Aft
+            dP_dTrim_unscaled = dP_dFore_unscaled - dP_dAft_unscaled
+        else:
+            dP_dTrim_unscaled = torch.zeros_like(dP_dV_unscaled)
+
+        # Unscale speed
+        V_scaled = x_collocation[:, V_idx].view(-1, 1)
+        V_unscaled = V_scaled * std_V + mean_V
+        V_unscaled_safe = torch.clamp(V_unscaled, min=1e-3)
+
+        # PDE coefficients
+        gamma = self.model.gamma
+        delta = self.model.delta
+
+        # Enforce beta >= 2 with beta = 2.0 + exp(raw_beta)
+        beta = 2.0 + torch.exp(self.model.raw_beta)
+
+        # PDE:
+        # dP/dV + gamma*dP/dH_s + delta*dP/dTrim - (beta*P / V) = 0
+        residual = (
+            dP_dV_unscaled
+            + gamma * dP_dHs_unscaled
+            + delta * dP_dTrim_unscaled
+            - (beta * P_unscaled) / V_unscaled_safe
+        )
+
+        # Scale down the residual for stability
         scaling_factor = torch.tensor(1e5, dtype=torch.float32, device=self.device)
         residual_normalized = residual / scaling_factor
 
         return residual_normalized
 
     def compute_boundary_loss(self, feature_indices, data_processor, X_unscaled, scale=1e8):
+        """
+        Boundary conditions (example):
+         - P ~ 0 for speeds in [0,1)
+         - P >= 9000 kW at speed = 13 knots
+        """
         V_idx = feature_indices['Speed-Through-Water']
         x_min = X_unscaled.min()
         x_max = X_unscaled.max()
@@ -214,15 +287,11 @@ class ShipSpeedPredictorModel:
         mean_P = torch.tensor(data_processor.scaler_y.mean_, dtype=torch.float32, device=self.device)
         std_P = torch.tensor(data_processor.scaler_y.scale_, dtype=torch.float32, device=self.device)
 
-        # ============================================
-        # Condition 1: P ~ 0 for speeds in [0, 1) knot
-        # ============================================
+        # Condition 1: P ~ 0 for speeds in [0,1)
         V_col = X_unscaled.columns[V_idx]
         x_boundary_unscaled_low_speed = pd.DataFrame(columns=X_unscaled.columns)
-        # Random speed in range [0, 1) for boundary
-        x_boundary_unscaled_low_speed[V_col] = np.random.uniform(0.0, 1.0, size=num_points)
 
-        # For other columns, sample random in [min, max]
+        x_boundary_unscaled_low_speed[V_col] = np.random.uniform(0.0, 1.0, size=num_points)
         for col in X_unscaled.columns:
             if col != V_col:
                 x_boundary_unscaled_low_speed[col] = np.random.uniform(
@@ -233,17 +302,14 @@ class ShipSpeedPredictorModel:
         x_boundary_low_speed = torch.tensor(x_boundary_low_speed_scaled, dtype=torch.float32, device=self.device)
         outputs_low_speed = self.model(x_boundary_low_speed)
 
-        # We want outputs_low_speed ~ 0, so penalize squared power
         boundary_loss_low_speed = torch.mean(outputs_low_speed**2) / scale
 
-        # ===============================================
-        # Condition 2: P ≥ 8000 kW when V >= 13 knots
-        # ===============================================
+        # Condition 2: P >= 9000 kW at speed=13 knots
         V_ineq_knots = 13.0
-        P_min = 8000.0  # kW
-
+        P_min = 9000.0
         x_boundary_unscaled_ineq = pd.DataFrame(columns=X_unscaled.columns)
         x_boundary_unscaled_ineq[V_col] = np.full(num_points, V_ineq_knots)
+
         for col in X_unscaled.columns:
             if col != V_col:
                 x_boundary_unscaled_ineq[col] = np.random.uniform(
@@ -254,78 +320,22 @@ class ShipSpeedPredictorModel:
         x_boundary_ineq = torch.tensor(x_boundary_ineq_scaled, dtype=torch.float32, device=self.device)
         outputs_ineq = self.model(x_boundary_ineq)
 
-        # Convert model outputs back to original scale (kW)
         outputs_ineq_unscaled = outputs_ineq * std_P + mean_P
 
-        # Penalize if outputs_ineq_unscaled < 12000
         violation = torch.relu(P_min - outputs_ineq_unscaled)
         boundary_loss_ineq = torch.mean(violation**2) / scale
 
-        # Combine boundary losses
         boundary_loss = boundary_loss_low_speed + boundary_loss_ineq
         return boundary_loss
 
-    def calculate_physics_loss(self, V, predicted_power_scaled, trim,
-                               H_s, theta_ship, theta_wave, data_processor):
-        """Calculate the physics-based loss combining frictional, residuary, and wave-induced resistances."""
-        C_wave = self.model.C_wave  # Wave Resistance Coefficient
-        eta_D = self.model.eta_D    # Propulsion System Efficiency
-        C_resid = self.model.C_resid # Residuary Resistance
-
-        V = torch.clamp(V, min=1e-5)
-        H_s = torch.clamp(H_s, min=0.0)
-        trim = torch.clamp(trim, min=-5.0, max=5.0)
-
-        # Reynolds Number
-        Re = V * self.L / self.nu
-        Re = torch.clamp(Re, min=1e-5)
-
-        # Frictional Resistance Coefficient
-        C_f = 0.075 / (torch.log10(Re) - 2) ** 2
-
-        # Frictional Resistance
-        R_f = (1 + self.k) * 0.5 * self.rho * V**2 * self.S * C_f
-
-        # Residuary Resistance
-        #C_resid = 0.03  # Assumed constant
-        R_resid = C_resid * R_f
-
-        # Wave-Induced Resistance
-        A = H_s / 2  # Wave amplitude
-        S_wave = self.L * self.B  # Wetted surface area affected by waves
-
-        # Relative Wave Angle
-        theta_rel_wave = torch.abs(theta_wave - theta_ship) % 360
-        theta_rel_wave = torch.where(theta_rel_wave > 180, 360 - theta_rel_wave, theta_rel_wave)
-        theta_rel_wave_rad = theta_rel_wave * torch.pi / 180
-
-        R_wave = 0.5 * self.rho * self.g * A * S_wave * C_wave * torch.cos(theta_rel_wave_rad)**2
-
-        # Total Resistance
-        R_total = R_f + R_resid + R_wave
-
-        # Required Propulsion Power
-        P_total = (V * R_total) / eta_D  # Power in Watts
-        P_total = P_total / 1000
-
-        # Scaling
-        scaler_y_mean = torch.tensor(data_processor.scaler_y.mean_, dtype=V.dtype, device=V.device)
-        scaler_y_scale = torch.tensor(data_processor.scaler_y.scale_, dtype=V.dtype, device=V.device)
-        P_total_scaled = (P_total - scaler_y_mean) / scaler_y_scale
-
-        # Physics Loss (MSE)
-        physics_loss = torch.mean((predicted_power_scaled.squeeze() - P_total_scaled) ** 2)
-        return physics_loss, P_total_scaled
-
     @staticmethod
-    def compute_total_loss(data_loss, physics_loss, pde_loss, boundary_loss,
-                           data_loss_coeff=1.0, physics_loss_coeff=1.0,
-                           pde_loss_coeff=1.0, boundary_loss_coeff=1.0):
-        """Compute the total weighted loss."""
-        return (data_loss_coeff * data_loss) + \
-               (physics_loss_coeff * physics_loss) + \
-               (pde_loss_coeff * pde_loss) + \
-               (boundary_loss_coeff * boundary_loss)
+    def compute_total_loss(data_loss, pde_loss, boundary_loss,
+                           data_loss_coeff=1.0, pde_loss_coeff=1.0,
+                           boundary_loss_coeff=1.0):
+
+        return (data_loss_coeff * data_loss) \
+             + (pde_loss_coeff * pde_loss) \
+             + (boundary_loss_coeff * boundary_loss)
 
     def train(self, 
             train_loader, 
@@ -336,31 +346,28 @@ class ShipSpeedPredictorModel:
             val_loader=None, 
             val_unscaled_loader=None, 
             X_val_unscaled=None,
-            live_plot=False,
-            enable_early_stopping=False,
-            patience=10):
-
+            live_plot=False):
+        """
+        Train method with optional early stopping based on validation total loss.
+        """
         optimizer = self.get_optimizer()
         loss_function = self.get_loss_function()
 
         train_losses = []
         val_losses = []
 
-        # -- Early Stopping Tracking Variables --
-        best_val_loss = float('inf')
-        epochs_no_improve = 0
+        # Track betas across epochs (optional)
+        betas = []
 
-
+        # For live plot (if you want to visualize during training)
         if live_plot:
             plt.ion()
             fig, ax = plt.subplots()
 
-        speed_idx = feature_indices['Speed-Through-Water']
-        fore_draft_idx = feature_indices['Draft_Fore']
-        aft_draft_idx = feature_indices['Draft_Aft']
-        h_s_idx = feature_indices.get('Significant_Wave_Height')
-        theta_ship_idx = feature_indices.get('True_Heading')
-        theta_wave_idx = feature_indices.get('Mean_Wave_Direction')
+        # Early stopping tracking
+        best_val_loss = float('inf')
+        best_model_state = None
+        epochs_no_improvement = 0
 
         for epoch in range(self.epochs):
             self.model.train()
@@ -368,7 +375,6 @@ class ShipSpeedPredictorModel:
             running_data_loss = 0.0
             running_pde_loss = 0.0
             running_boundary_loss = 0.0
-            running_physics_loss = 0.0
 
             total_batches = len(train_loader)
             progress_bar = tqdm(
@@ -381,147 +387,124 @@ class ShipSpeedPredictorModel:
             for batch_index, ((X_batch, y_batch), (X_unscaled_batch,)) in progress_bar:
                 X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
                 X_unscaled_batch = X_unscaled_batch.to(self.device)
+
                 optimizer.zero_grad()
 
+                # Forward pass => data loss
                 outputs = self.model(X_batch)
                 data_loss = loss_function(outputs, y_batch)
 
-                V = X_unscaled_batch[:, speed_idx] * 0.51444
-                trim = X_unscaled_batch[:, fore_draft_idx] - X_unscaled_batch[:, aft_draft_idx]
-
-                if h_s_idx is not None and theta_ship_idx is not None and theta_wave_idx is not None:
-                    H_s = X_unscaled_batch[:, h_s_idx]
-                    theta_ship = X_unscaled_batch[:, theta_ship_idx]
-                    theta_wave = X_unscaled_batch[:, theta_wave_idx]
-                else:
-                    H_s = torch.zeros_like(V)
-                    theta_ship = torch.zeros_like(V)
-                    theta_wave = torch.zeros_like(V)
-
-                physics_loss, _ = self.calculate_physics_loss(
-                    V, 
-                    outputs, 
-                    trim, 
-                    H_s, 
-                    theta_ship, 
-                    theta_wave, 
-                    data_processor
-                )
-
-                x_collocation = self.sample_collocation_points(
-                    self.batch_size, 
-                    X_train_unscaled, 
-                    data_processor
-                )
-                pde_residual = self.compute_pde_residual(
-                    x_collocation, 
-                    feature_indices, 
-                    data_processor
-                )
+                # Compute PDE residual
+                x_collocation = self.sample_collocation_points(self.batch_size, 
+                                                            X_train_unscaled, 
+                                                            data_processor)
+                pde_residual = self.compute_pde_residual(x_collocation, 
+                                                        feature_indices, 
+                                                        data_processor)
                 pde_loss = torch.mean(pde_residual**2)
 
-                boundary_loss = self.compute_boundary_loss(
-                    feature_indices, 
-                    data_processor, 
-                    X_train_unscaled
-                )
+                # Boundary loss
+                boundary_loss = self.compute_boundary_loss(feature_indices, 
+                                                        data_processor, 
+                                                        X_train_unscaled)
 
+                # For demonstration, let's do a smaller PDE weight if desired:
                 total_loss = self.compute_total_loss(
-                    data_loss, 
-                    physics_loss, 
-                    pde_loss, 
-                    boundary_loss
+                    data_loss=data_loss,
+                    pde_loss=pde_loss,
+                    boundary_loss=boundary_loss,
+                    data_loss_coeff=1.0, 
+                    pde_loss_coeff=1.0,  # or 1.0, depending on preference
+                    boundary_loss_coeff=1.0
                 )
 
                 total_loss.backward()
                 optimizer.step()
 
+                # Accumulate
                 running_loss += total_loss.item()
                 running_data_loss += data_loss.item()
                 running_pde_loss += pde_loss.item()
                 running_boundary_loss += boundary_loss.item()
-                running_physics_loss += physics_loss.item()
+
+                # Log the current beta (now forced >= 2)
+                with torch.no_grad():
+                    current_beta = 2.0 + torch.exp(self.model.raw_beta)
 
                 progress_bar.set_postfix({
-                    "Total Loss": f"{running_loss / (batch_index + 1):.8f}",
-                    "Data Loss": f"{running_data_loss / (batch_index + 1):.8f}",
-                    "PDE Loss": f"{running_pde_loss / (batch_index + 1):.8f}",
-                    "Boundary Loss": f"{running_boundary_loss / (batch_index + 1):.8f}",
-                    "Physics Loss": f"{running_physics_loss / (batch_index + 1):.8f}",
+                    "Total Loss": f"{running_loss / (batch_index + 1):.6f}",
+                    "Data Loss": f"{running_data_loss / (batch_index + 1):.6f}",
+                    "PDE Loss": f"{running_pde_loss / (batch_index + 1):.6f}",
+                    "Boundary Loss": f"{running_boundary_loss / (batch_index + 1):.6f}",
+                    "beta": f"{current_beta.item():.3f}"
                 })
 
             avg_total_loss = running_loss / total_batches
             avg_data_loss = running_data_loss / total_batches
             avg_pde_loss = running_pde_loss / total_batches
             avg_boundary_loss = running_boundary_loss / total_batches
-            avg_physics_loss = running_physics_loss / total_batches
 
             train_losses.append(avg_total_loss)
 
-            # Evaluate on validation set if provided
+            # Store beta for each epoch (optional)
+            betas.append(current_beta.item())
+
+            # Validation
+            val_total_loss = None
             if val_loader is not None and val_unscaled_loader is not None and X_val_unscaled is not None:
-                val_total_loss, val_data_loss, val_pde_loss, val_boundary_loss, val_physics_loss = \
-                    self.evaluate_on_loader(
-                        val_loader, 
-                        val_unscaled_loader, 
-                        feature_indices, 
-                        data_processor, 
-                        X_val_unscaled
-                    )
+                val_total_loss, val_data_loss, val_pde_loss, val_boundary_loss = \
+                    self.evaluate_on_loader(val_loader, val_unscaled_loader, 
+                                            feature_indices, data_processor, 
+                                            X_val_unscaled)
                 val_losses.append(val_total_loss)
 
                 print(f"Epoch [{epoch+1}/{self.epochs}], "
-                    f"Total Loss: {avg_total_loss:.8f}, Data Loss: {avg_data_loss:.8f}, "
-                    f"PDE Loss: {avg_pde_loss:.8f}, Boundary Loss: {avg_boundary_loss:.8f}, "
-                    f"Physics Loss: {avg_physics_loss:.8f}, "
-                    f"Validation Total Loss: {val_total_loss:.8f}, "
-                    f"Validation Data Loss: {val_data_loss:.8f}, "
-                    f"Validation PDE Loss: {val_pde_loss:.8f}, "
-                    f"Validation Boundary Loss: {val_boundary_loss:.8f}, "
-                    f"Validation Physics Loss: {val_physics_loss:.8f}, "
-                    f"Learning Rate: {optimizer.param_groups[0]['lr']:.1e}")
-
-                # -------------------------------
-                # Early Stopping Check
-                # -------------------------------
-                if enable_early_stopping:
-                    # If the current validation loss is the best so far, reset patience counter
-                    if val_total_loss < best_val_loss:
-                        best_val_loss = val_total_loss
-                        epochs_no_improve = 0
-                    else:
-                        epochs_no_improve += 1
-                        print(f"Epochs no improvement: {epochs_no_improve}/{patience}")
-                    
-                    # If no improvement for 'patience' epochs, stop training
-                    if epochs_no_improve >= patience:
-                        print("Early stopping triggered due to no improvement in validation loss.")
-                        break
-
+                    f"Total Loss: {avg_total_loss:.6f}, Data Loss: {avg_data_loss:.6f}, "
+                    f"PDE Loss: {avg_pde_loss:.6f}, Boundary Loss: {avg_boundary_loss:.6f}, "
+                    f"Validation Total Loss: {val_total_loss:.6f}, "
+                    f"Validation Data Loss: {val_data_loss:.6f}, "
+                    f"Validation PDE Loss: {val_pde_loss:.6f}, "
+                    f"Validation Boundary Loss: {val_boundary_loss:.6f}, "
+                    f"LR: {optimizer.param_groups[0]['lr']:.1e}, "
+                    f"beta: {current_beta.item():.3f}")
             else:
                 val_losses.append(None)
                 print(f"Epoch [{epoch+1}/{self.epochs}], "
-                    f"Total Loss: {avg_total_loss:.8f}, "
-                    f"Data Loss: {avg_data_loss:.8f}, PDE Loss: {avg_pde_loss:.8f}, "
-                    f"Boundary Loss: {avg_boundary_loss:.8f}, Physics Loss: {avg_physics_loss:.8f}, "
-                    f"Learning Rate: {optimizer.param_groups[0]['lr']:.1e}")
+                    f"Total Loss: {avg_total_loss:.6f}, Data Loss: {avg_data_loss:.6f}, "
+                    f"PDE Loss: {avg_pde_loss:.6f}, Boundary Loss: {avg_boundary_loss:.6f}, "
+                    f"LR: {optimizer.param_groups[0]['lr']:.1e}, "
+                    f"beta: {current_beta.item():.3f}")
 
+
+            # EARLY STOPPING LOGIC
+            if self.early_stopping and val_total_loss is not None:
+                if val_total_loss < (best_val_loss - self.min_delta):
+                    best_val_loss = val_total_loss
+                    best_model_state = copy.deepcopy(self.model.state_dict())
+                    epochs_no_improvement = 0
+                else:
+                    epochs_no_improvement += 1
+                    if epochs_no_improvement >= self.patience:
+                        print(f"Early stopping triggered at epoch {epoch+1}.")
+                        break
+
+            # Live plot, if desired
             if live_plot:
                 ax.clear()
                 ax.plot(range(1, epoch+2), train_losses, label='Training Total Loss')
                 if val_loader is not None:
-                    # Only plot valid validation losses (non-None)
+                    valid_val_epochs = [i+1 for i, v in enumerate(val_losses) if v is not None]
                     valid_val_losses = [v for v in val_losses if v is not None]
-                    ax.plot(
-                        [i for i, v in enumerate(val_losses) if v is not None],
-                        valid_val_losses, 
-                        label='Validation Total Loss'
-                    )
+                    ax.plot(valid_val_epochs, valid_val_losses, label='Validation Total Loss')
                 ax.set_xlabel('Epoch')
                 ax.set_ylabel('Loss')
                 ax.set_title('Training and Validation Total Loss over Epochs')
                 ax.legend()
-                plt.pause(0.01)        
+                plt.pause(0.01)
+
+        if self.early_stopping and best_model_state is not None:
+            print("Restoring best model state from early-stopping.")
+            self.model.load_state_dict(best_model_state)
 
         if live_plot:
             plt.ioff()
@@ -529,82 +512,58 @@ class ShipSpeedPredictorModel:
             fig.savefig('training_validation_loss_plot.png')
 
     def evaluate_on_loader(self, data_loader, unscaled_data_loader, feature_indices, data_processor, X_val_unscaled):
-        """
-        Evaluate the model on the given data_loader and unscaled_data_loader,
-        but sample PDE and boundary points from the validation subset (X_val_unscaled).
-        """
+
         self.model.eval()
         loss_function = self.get_loss_function()
         running_total_loss = 0.0
         running_data_loss = 0.0
         running_pde_loss = 0.0
         running_boundary_loss = 0.0
-        running_physics_loss = 0.0
         total_batches = len(data_loader)
-
-        speed_idx = feature_indices['Speed-Through-Water']
-        fore_draft_idx = feature_indices['Draft_Fore']
-        aft_draft_idx = feature_indices['Draft_Aft']
-        h_s_idx = feature_indices.get('Significant_Wave_Height')
-        theta_ship_idx = feature_indices.get('True_Heading')
-        theta_wave_idx = feature_indices.get('Mean_Wave_Direction')
 
         with torch.no_grad():
             for (X_batch, y_batch), (X_unscaled_batch,) in zip(data_loader, unscaled_data_loader):
                 X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
-                X_unscaled_batch = X_unscaled_batch.to(self.device)
 
+                # Data loss
                 outputs = self.model(X_batch)
                 data_loss = loss_function(outputs, y_batch)
 
-                V = X_unscaled_batch[:, speed_idx] * 0.51444
-                trim = X_unscaled_batch[:, fore_draft_idx] - X_unscaled_batch[:, aft_draft_idx]
-
-                if h_s_idx is not None and theta_ship_idx is not None and theta_wave_idx is not None:
-                    H_s = X_unscaled_batch[:, h_s_idx]
-                    theta_ship = X_unscaled_batch[:, theta_ship_idx]
-                    theta_wave = X_unscaled_batch[:, theta_wave_idx]
-                else:
-                    H_s = torch.zeros_like(V)
-                    theta_ship = torch.zeros_like(V)
-                    theta_wave = torch.zeros_like(V)
-
-                physics_loss, _ = self.calculate_physics_loss(V, outputs, trim, H_s, theta_ship, theta_wave, data_processor)
-
-                # PDE computations require gradients, enable them temporarily
+                # PDE computations: must briefly enable grad
                 with torch.enable_grad():
                     x_collocation = self.sample_collocation_points(len(X_batch), X_val_unscaled, data_processor)
                     x_collocation.requires_grad_(True)
                     pde_residual = self.compute_pde_residual(x_collocation, feature_indices, data_processor)
                     pde_loss = torch.mean(pde_residual**2)
 
-                # Compute boundary loss with the same approach used in training
+                # Boundary loss
                 boundary_loss = self.compute_boundary_loss(feature_indices, data_processor, X_val_unscaled)
 
-                total_loss = self.compute_total_loss(data_loss, physics_loss, pde_loss, boundary_loss)
+                # Total loss
+                total_loss = self.compute_total_loss(data_loss, pde_loss, boundary_loss)
 
                 running_total_loss += total_loss.item()
                 running_data_loss += data_loss.item()
                 running_pde_loss += pde_loss.item()
                 running_boundary_loss += boundary_loss.item()
-                running_physics_loss += physics_loss.item()
 
         avg_total_loss = running_total_loss / total_batches
         avg_data_loss = running_data_loss / total_batches
         avg_pde_loss = running_pde_loss / total_batches
         avg_boundary_loss = running_boundary_loss / total_batches
-        avg_physics_loss = running_physics_loss / total_batches
 
         print(f"Validation Loss Breakdown: "
-              f"Total: {avg_total_loss:.8f}, "
-              f"Data: {avg_data_loss:.8f}, "
-              f"PDE: {avg_pde_loss:.8f}, "
-              f"Boundary: {avg_boundary_loss:.8f}, "
-              f"Physics: {avg_physics_loss:.8f}")
+              f"Total: {avg_total_loss:.6f}, "
+              f"Data: {avg_data_loss:.6f}, "
+              f"PDE: {avg_pde_loss:.6f}, "
+              f"Boundary: {avg_boundary_loss:.6f}")
 
-        return avg_total_loss, avg_data_loss, avg_pde_loss, avg_boundary_loss, avg_physics_loss
+        return avg_total_loss, avg_data_loss, avg_pde_loss, avg_boundary_loss
 
     def evaluate(self, X_eval, y_eval, dataset_type="Validation", data_processor=None):
+        """
+        Evaluate data loss only (no PDE or boundary) on a held-out set.
+        """
         self.model.eval()
         X_eval_tensor = torch.tensor(X_eval.values, dtype=torch.float32).to(self.device)
         y_eval_tensor = torch.tensor(y_eval.values, dtype=torch.float32).view(-1, 1).to(self.device)
@@ -613,18 +572,20 @@ class ShipSpeedPredictorModel:
         with torch.no_grad():
             outputs = self.model(X_eval_tensor)
             loss = loss_function(outputs, y_eval_tensor)
-            print(f"\n{dataset_type} Loss: {loss.item():.8f}")
+            print(f"\n{dataset_type} Loss: {loss.item():.6f}")
 
             if data_processor:
                 outputs_original = data_processor.inverse_transform_y(outputs.cpu().numpy())
                 y_eval_original = data_processor.inverse_transform_y(y_eval_tensor.cpu().numpy())
-
                 rmse = np.sqrt(np.mean((outputs_original - y_eval_original) ** 2))
                 print(f"{dataset_type} RMSE: {rmse:.4f}")
 
         return loss.item()
 
     def cross_validate(self, X, X_unscaled, y, feature_indices, data_processor, k_folds=5):
+        """
+        k-fold cross-validation using data, PDE, and boundary losses.
+        """
         kfold = KFold(n_splits=k_folds)
         fold_results = []
 
@@ -641,13 +602,16 @@ class ShipSpeedPredictorModel:
 
             self.model.apply(self.reset_weights)
             self.train(train_loader, X_train_unscaled_fold, feature_indices, data_processor,
-                       unscaled_data_loader, val_loader=val_loader, val_unscaled_loader=val_unscaled_loader,
-                       X_val_unscaled=X_val_unscaled_fold, live_plot=False)
+                       unscaled_data_loader,
+                       val_loader=val_loader,
+                       val_unscaled_loader=val_unscaled_loader,
+                       X_val_unscaled=X_val_unscaled_fold,
+                       live_plot=False)
             val_loss = self.evaluate(X_val_fold, y_val_fold, dataset_type="Validation", data_processor=data_processor)
             fold_results.append(val_loss)
 
         avg_val_loss = np.mean(fold_results)
-        print(f"\nCross-validation results: Average Validation Loss = {avg_val_loss:.8f}")
+        print(f"\nCross-validation results: Average Validation Loss = {avg_val_loss:.6f}")
         return avg_val_loss
 
     @staticmethod
@@ -659,6 +623,7 @@ class ShipSpeedPredictorModel:
     def hyperparameter_search(X_train, X_train_unscaled, y_train, feature_indices,
                               param_grid, epochs_cv, optimizer, loss_function,
                               data_processor, k_folds=5):
+
         best_params = None
         best_loss = float('inf')
         hyperparameter_combinations = list(product(
@@ -687,15 +652,16 @@ class ShipSpeedPredictorModel:
                 best_loss = avg_val_loss
                 best_params = {'lr': lr, 'batch_size': batch_size}
 
-        print(f"\nBest parameters: {best_params}, with average validation loss: {best_loss:.8f}")
+        print(f"\nBest parameters: {best_params}, with average validation loss: {best_loss:.6f}")
         with open("best_hyperparameters.txt", "w") as f:
             f.write(f"Best parameters: {best_params}\n")
-            f.write(f"Best average validation loss: {best_loss:.8f}\n")
+            f.write(f"Best average validation loss: {best_loss:.6f}\n")
 
         return best_params, best_loss
 
 
 if __name__ == "__main__":
+    # Example usage:
     data_processor = DataProcessor(
         file_path='data/Dan/P data_20210428-20211111_Democritos.csv',
         target_column='Power',
@@ -706,29 +672,21 @@ if __name__ == "__main__":
         X_train, X_test, X_train_unscaled, X_test_unscaled, y_train, y_test, \
             y_train_unscaled, y_test_unscaled = result
 
-        data_processor.X_train_unscaled = X_train_unscaled
-
-        print(f"X_train shape: {X_train.shape}")
-        print(f"X_train_unscaled shape: {X_train_unscaled.shape}")
-        print(f"y_train shape: {y_train.shape}")
-
-        assert list(X_train.columns) == list(X_train_unscaled.columns), \
-            "Column mismatch between scaled and unscaled data"
-
         feature_indices = {col: idx for idx, col in enumerate(X_train_unscaled.columns)}
 
-        required_columns = ['Speed-Through-Water', 'Draft_Fore', 'Draft_Aft']
-        for col in required_columns:
-            if col not in feature_indices:
-                raise ValueError(f"Required column '{col}' not found in data")
+        # Check required columns
+        required_cols = ['Speed-Through-Water', 'Draft_Fore', 'Draft_Aft']
+        for rc in required_cols:
+            if rc not in feature_indices:
+                raise ValueError(f"Required column '{rc}' not found in data")
 
+        # Hyperparameter grid
         param_grid = {
             'lr': [0.0001],
             'batch_size': [1024]
         }
-
         epochs_cv = 1
-        epochs_final = 1000
+        epochs_final = 100
         optimizer = 'Adam'
         loss_function = 'MSE'
 
@@ -737,7 +695,7 @@ if __name__ == "__main__":
             param_grid, epochs_cv, optimizer, loss_function, data_processor, k_folds=5
         )
 
-        # Split final training/validation
+        # Final training
         X_train_final, X_val_final, X_train_unscaled_final, X_val_unscaled_final, \
             y_train_final, y_val_final = train_test_split(
                 X_train, X_train_unscaled, y_train, test_size=0.1
@@ -750,24 +708,26 @@ if __name__ == "__main__":
             optimizer_choice=optimizer,
             loss_function_choice=loss_function,
             batch_size=best_params['batch_size'],
-            debug_mode=False
+            debug_mode=False,
+            early_stopping=False,  # or True, if you wish
+            patience=40,
+            min_delta=0.0001
         )
 
-        final_train_loader = final_model.prepare_dataloader(X_train_final, y_train_final)
-        final_unscaled_loader = final_model.prepare_unscaled_dataloader(X_train_unscaled_final)
-        final_val_loader = final_model.prepare_dataloader(X_val_final, y_val_final)
-        final_val_unscaled_loader = final_model.prepare_unscaled_dataloader(X_val_unscaled_final)
+        train_loader = final_model.prepare_dataloader(X_train_final, y_train_final)
+        unscaled_loader = final_model.prepare_unscaled_dataloader(X_train_unscaled_final)
+        val_loader = final_model.prepare_dataloader(X_val_final, y_val_final)
+        val_unscaled_loader = final_model.prepare_unscaled_dataloader(X_val_unscaled_final)
 
-        final_model.train(
-            final_train_loader, X_train_unscaled_final, feature_indices, data_processor,
-            unscaled_data_loader=final_unscaled_loader,
-            val_loader=final_val_loader,
-            val_unscaled_loader=final_val_unscaled_loader,
-            X_val_unscaled=X_val_unscaled_final,
-            live_plot=True,
-            enable_early_stopping=True,
-            patience=40  
-        )
+        final_model.train(train_loader,
+                          X_train_unscaled_final,
+                          feature_indices,
+                          data_processor,
+                          unscaled_data_loader=unscaled_loader,
+                          val_loader=val_loader,
+                          val_unscaled_loader=val_unscaled_loader,
+                          X_val_unscaled=X_val_unscaled_final,
+                          live_plot=True)
 
         with open('best_hyperparameters.json', 'w') as f:
             json.dump(best_params, f)
@@ -775,13 +735,8 @@ if __name__ == "__main__":
         # Evaluate on test set
         final_model.evaluate(X_test, y_test, dataset_type="Test", data_processor=data_processor)
 
-        # ------------------------------------------------------
-        # Prepare for final CSV output with extra columns
-        # ------------------------------------------------------
-        # 1) Ensure consistent column order
+        # Convert for inference
         X_test_unscaled = X_test_unscaled[X_train_unscaled.columns]
-
-        # 2) Convert X_test_unscaled for inference
         X_test_scaled = data_processor.scaler_X.transform(X_test_unscaled)
         X_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32).to(final_model.device)
 
@@ -789,53 +744,29 @@ if __name__ == "__main__":
         with torch.no_grad():
             y_pred_scaled = final_model.model(X_test_tensor)
             y_pred_scaled_np = y_pred_scaled.cpu().numpy()
-            # Convert scaled predictions back to original power units
             y_pred = data_processor.inverse_transform_y(y_pred_scaled_np).flatten()
 
         y_actual = y_test_unscaled.values.flatten()
 
-        # ------------------------------------------------------
-        # Gather unscaled test columns
-        # ------------------------------------------------------
         speed_unscaled = X_test_unscaled['Speed-Through-Water'].values
-
-        # Draft columns (already in unscaled domain)
         draft_fore_unscaled = X_test_unscaled['Draft_Fore'].values
         draft_aft_unscaled = X_test_unscaled['Draft_Aft'].values
 
-        # Significant Wave Height (if present in your columns)
         if 'Significant_Wave_Height' in X_test_unscaled.columns:
             hs_unscaled = X_test_unscaled['Significant_Wave_Height'].values
         else:
-            # If it's not in the columns, fill with zeros or some default
             hs_unscaled = np.zeros(len(X_test_unscaled))
 
-        # Compute relative wave angle from True_Heading & Mean_Wave_Direction
-        # If they exist in the DataFrame
-        if 'True_Heading' in X_test_unscaled.columns and 'Mean_Wave_Direction' in X_test_unscaled.columns:
-            theta_ship_unscaled = X_test_unscaled['True_Heading'].values
-            theta_wave_unscaled = X_test_unscaled['Mean_Wave_Direction'].values
-
-            theta_rel_angle = np.abs(theta_wave_unscaled - theta_ship_unscaled) % 360
-            theta_rel_angle = np.where(theta_rel_angle > 180, 360 - theta_rel_angle, theta_rel_angle)
-        else:
-            # Fallback if columns are missing
-            theta_rel_angle = np.zeros(len(X_test_unscaled))
-
-        # ------------------------------------------------------
-        # Build final DataFrame with extra columns
-        # ------------------------------------------------------
         results_df = pd.DataFrame({
             'Speed-Through-Water': speed_unscaled,
             'Draft_Fore': draft_fore_unscaled,
             'Draft_Aft': draft_aft_unscaled,
             'Significant_Wave_Height': hs_unscaled,
-            'Relative_Wave_Angle': theta_rel_angle,
             'Actual Power': y_actual,
             'Predicted Power': y_pred
         })
 
-        # Save to CSV
+        # Save predictions
         output_csv_file = 'power_predictions.csv'
         results_df.to_csv(output_csv_file, index=False)
         print(f"Predictions saved to {output_csv_file}")
