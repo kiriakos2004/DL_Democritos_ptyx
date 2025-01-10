@@ -26,6 +26,7 @@ def initialize_weights(model):
             if layer.bias is not None:
                 nn.init.zeros_(layer.bias)
 
+
 class ShipSpeedPredictorModel:
     def __init__(self, 
                  input_size, 
@@ -78,10 +79,6 @@ class ShipSpeedPredictorModel:
             # PDE coefficients for wave height, trim, etc.
             self.gamma = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
             self.delta = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
-
-            # Trainable exponent parameter (raw_beta) 
-            # We'll enforce beta >= 2.0 using beta = 2.0 + exp(raw_beta)
-            self.raw_beta = nn.Parameter(torch.tensor(math.log(0.5), dtype=torch.float32))
 
         def forward(self, x):
             x = torch.relu(self.fc1(x))
@@ -191,7 +188,7 @@ class ShipSpeedPredictorModel:
             grad_outputs=torch.ones_like(outputs),
             create_graph=True,
             retain_graph=True
-        )[0]  # shape [batch, num_features]
+        )[0]
 
         # Identify columns
         V_idx = feature_indices['Speed-Through-Water']
@@ -254,8 +251,8 @@ class ShipSpeedPredictorModel:
         gamma = self.model.gamma
         delta = self.model.delta
 
-        # Enforce beta >= 2 with beta = 2.0 + exp(raw_beta)
-        beta = 2.0 + torch.exp(self.model.raw_beta)
+        # The power of the relation between speed and power:
+        beta = 3.0  
 
         # PDE:
         # dP/dV + gamma*dP/dH_s + delta*dP/dTrim - (beta*P / V) = 0
@@ -267,12 +264,12 @@ class ShipSpeedPredictorModel:
         )
 
         # Scale down the residual for stability
-        scaling_factor = torch.tensor(1e5, dtype=torch.float32, device=self.device)
+        scaling_factor = torch.tensor(1e6, dtype=torch.float32, device=self.device)
         residual_normalized = residual / scaling_factor
 
         return residual_normalized
 
-    def compute_boundary_loss(self, feature_indices, data_processor, X_unscaled, scale=1e8):
+    def compute_boundary_loss(self, feature_indices, data_processor, X_unscaled, scale=1e7):
         """
         Boundary conditions (example):
          - P ~ 0 for speeds in [0,1)
@@ -304,7 +301,7 @@ class ShipSpeedPredictorModel:
 
         boundary_loss_low_speed = torch.mean(outputs_low_speed**2) / scale
 
-        # Condition 2: P >= 9000 kW at speed=13 knots
+        # Condition 2: P >= 9000 kW at speed = 13 knots
         V_ineq_knots = 13.0
         P_min = 9000.0
         x_boundary_unscaled_ineq = pd.DataFrame(columns=X_unscaled.columns)
@@ -356,9 +353,6 @@ class ShipSpeedPredictorModel:
         train_losses = []
         val_losses = []
 
-        # Track betas across epochs (optional)
-        betas = []
-
         # For live plot (if you want to visualize during training)
         if live_plot:
             plt.ion()
@@ -408,13 +402,12 @@ class ShipSpeedPredictorModel:
                                                         data_processor, 
                                                         X_train_unscaled)
 
-                # For demonstration, let's do a smaller PDE weight if desired:
                 total_loss = self.compute_total_loss(
                     data_loss=data_loss,
                     pde_loss=pde_loss,
                     boundary_loss=boundary_loss,
                     data_loss_coeff=1.0, 
-                    pde_loss_coeff=1.0,  # or 1.0, depending on preference
+                    pde_loss_coeff=0.5,
                     boundary_loss_coeff=1.0
                 )
 
@@ -427,16 +420,12 @@ class ShipSpeedPredictorModel:
                 running_pde_loss += pde_loss.item()
                 running_boundary_loss += boundary_loss.item()
 
-                # Log the current beta (now forced >= 2)
-                with torch.no_grad():
-                    current_beta = 2.0 + torch.exp(self.model.raw_beta)
-
+                # REMOVED: Logging trainable beta
                 progress_bar.set_postfix({
                     "Total Loss": f"{running_loss / (batch_index + 1):.6f}",
                     "Data Loss": f"{running_data_loss / (batch_index + 1):.6f}",
                     "PDE Loss": f"{running_pde_loss / (batch_index + 1):.6f}",
                     "Boundary Loss": f"{running_boundary_loss / (batch_index + 1):.6f}",
-                    "beta": f"{current_beta.item():.3f}"
                 })
 
             avg_total_loss = running_loss / total_batches
@@ -445,9 +434,6 @@ class ShipSpeedPredictorModel:
             avg_boundary_loss = running_boundary_loss / total_batches
 
             train_losses.append(avg_total_loss)
-
-            # Store beta for each epoch (optional)
-            betas.append(current_beta.item())
 
             # Validation
             val_total_loss = None
@@ -459,22 +445,19 @@ class ShipSpeedPredictorModel:
                 val_losses.append(val_total_loss)
 
                 print(f"Epoch [{epoch+1}/{self.epochs}], "
-                    f"Total Loss: {avg_total_loss:.6f}, Data Loss: {avg_data_loss:.6f}, "
-                    f"PDE Loss: {avg_pde_loss:.6f}, Boundary Loss: {avg_boundary_loss:.6f}, "
-                    f"Validation Total Loss: {val_total_loss:.6f}, "
-                    f"Validation Data Loss: {val_data_loss:.6f}, "
-                    f"Validation PDE Loss: {val_pde_loss:.6f}, "
-                    f"Validation Boundary Loss: {val_boundary_loss:.6f}, "
-                    f"LR: {optimizer.param_groups[0]['lr']:.1e}, "
-                    f"beta: {current_beta.item():.3f}")
+                      f"Total Loss: {avg_total_loss:.6f}, Data Loss: {avg_data_loss:.6f}, "
+                      f"PDE Loss: {avg_pde_loss:.6f}, Boundary Loss: {avg_boundary_loss:.6f}, "
+                      f"Validation Total Loss: {val_total_loss:.6f}, "
+                      f"Validation Data Loss: {val_data_loss:.6f}, "
+                      f"Validation PDE Loss: {val_pde_loss:.6f}, "
+                      f"Validation Boundary Loss: {val_boundary_loss:.6f}, "
+                      f"LR: {optimizer.param_groups[0]['lr']:.1e}")
             else:
                 val_losses.append(None)
                 print(f"Epoch [{epoch+1}/{self.epochs}], "
-                    f"Total Loss: {avg_total_loss:.6f}, Data Loss: {avg_data_loss:.6f}, "
-                    f"PDE Loss: {avg_pde_loss:.6f}, Boundary Loss: {avg_boundary_loss:.6f}, "
-                    f"LR: {optimizer.param_groups[0]['lr']:.1e}, "
-                    f"beta: {current_beta.item():.3f}")
-
+                      f"Total Loss: {avg_total_loss:.6f}, Data Loss: {avg_data_loss:.6f}, "
+                      f"PDE Loss: {avg_pde_loss:.6f}, Boundary Loss: {avg_boundary_loss:.6f}, "
+                      f"LR: {optimizer.param_groups[0]['lr']:.1e}")
 
             # EARLY STOPPING LOGIC
             if self.early_stopping and val_total_loss is not None:
@@ -686,7 +669,7 @@ if __name__ == "__main__":
             'batch_size': [1024]
         }
         epochs_cv = 1
-        epochs_final = 100
+        epochs_final = 1000
         optimizer = 'Adam'
         loss_function = 'MSE'
 
@@ -709,9 +692,9 @@ if __name__ == "__main__":
             loss_function_choice=loss_function,
             batch_size=best_params['batch_size'],
             debug_mode=False,
-            early_stopping=False,  # or True, if you wish
+            early_stopping=True,
             patience=40,
-            min_delta=0.0001
+            min_delta=0.00001
         )
 
         train_loader = final_model.prepare_dataloader(X_train_final, y_train_final)
