@@ -9,6 +9,8 @@ share/
 old_code/
 results/
 Clustering/
+paper/
 
 # Ignore pyvenv.cfg
 pyvenv.cfg
+Results.xlsx

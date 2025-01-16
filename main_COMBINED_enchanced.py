@@ -12,7 +12,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import joblib
 import json
-from read_data_fragment_copy import DataProcessor
+from read_data_fragment import DataProcessor
 
 # Custom weight initialization function
 def initialize_weights(model):
@@ -45,7 +45,15 @@ class ShipSpeedPredictorModel:
         self.S = 9950.0        # Wetted surface area in m²
         self.L = 264.0         # Ship length in meters
         self.B = 50.0          # Beam (width) of the ship in meters
-        self.k = 1.5           # Empirical correction
+        self.k = 1.3           # Empirical correction
+
+        self.current_epoch = 0
+
+        self.initial_physics_weight = 5.0   # Physics loss starts with moderate importance
+        self.final_physics_weight = 30.0    # Physics loss becomes very important
+        self.initial_pde_weight = 2.0       # PDE loss starts with no influence
+        self.final_pde_weight = 10.0         # PDE loss becomes moderately important
+        self.boundary_weight = 1.0          # Boundary loss stays constant
 
         # Set random seed for reproducibility
         torch.manual_seed(42)
@@ -57,22 +65,28 @@ class ShipSpeedPredictorModel:
     class ShipSpeedPredictor(nn.Module):
         def __init__(self, input_size, dropout_rate=0.2):
             super().__init__()
-            self.fc1 = nn.Linear(input_size, 1024)
-            self.fc2 = nn.Linear(1024, 512)
-            self.fc3 = nn.Linear(512, 256)
-            self.fc4 = nn.Linear(256, 128)
-            self.fc5 = nn.Linear(128, 64)
-            self.fc6 = nn.Linear(64, 32)
-            self.fc7 = nn.Linear(32, 16)
-            self.fc8 = nn.Linear(16, 1)
+            self.fc1 = nn.Linear(input_size, 256)
+            self.fc2 = nn.Linear(256, 128)
+            self.fc3 = nn.Linear(128, 64)
+            self.fc4 = nn.Linear(64, 32)
+            self.fc5 = nn.Linear(32, 16)
+            self.fc6 = nn.Linear(16, 1)
 
             # Add Dropout layers
             self.dropout = nn.Dropout(p=dropout_rate)
 
-            # Define trainable physics parameters (Only C_wave and eta_D)
-            self.C_wave = nn.Parameter(torch.tensor(np.random.uniform(0.0005, 0.001), dtype=torch.float32))
-            self.eta_D = nn.Parameter(torch.tensor(np.random.uniform(0.7, 0.85), dtype=torch.float32))
-            self.C_resid = nn.Parameter(torch.tensor(np.random.uniform(0.04, 0.07), dtype=torch.float32))
+            # Initialize trainable parameters with starting values in middle of their ranges
+            self.C_wave = nn.Parameter(torch.tensor(0.0008, dtype=torch.float32))
+            self.eta_D = nn.Parameter(torch.tensor(0.8, dtype=torch.float32))
+            self.C_resid = nn.Parameter(torch.tensor(0.06, dtype=torch.float32))
+
+            # Register bounds as buffers (they won't be trained but will move to correct device)
+            self.register_buffer('C_wave_min', torch.tensor(0.0007))
+            self.register_buffer('C_wave_max', torch.tensor(0.001))
+            self.register_buffer('eta_D_min', torch.tensor(0.7))
+            self.register_buffer('eta_D_max', torch.tensor(0.85))
+            self.register_buffer('C_resid_min', torch.tensor(0.05))
+            self.register_buffer('C_resid_max', torch.tensor(0.07))
 
         def forward(self, x):
             x = torch.relu(self.fc1(x))
@@ -83,12 +97,8 @@ class ShipSpeedPredictorModel:
             x = self.dropout(x)
             x = torch.relu(self.fc4(x))
             x = self.dropout(x)
-            x = torch.relu(self.fc5(x))
-            x = self.dropout(x)
-            x = torch.relu(self.fc6(x))
-            x = self.dropout(x)
-            x = torch.relu(self.fc7(x))            
-            x = self.fc8(x)
+            x = torch.relu(self.fc5(x))        
+            x = self.fc6(x)
             return x
 
     def get_device(self):
@@ -154,6 +164,26 @@ class ShipSpeedPredictorModel:
         unscaled_dataset = TensorDataset(X_unscaled_tensor)
         unscaled_loader = DataLoader(unscaled_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
         return unscaled_loader
+    
+    def get_progressive_weight(self, current_epoch, max_epochs, start_weight, end_weight):
+        """
+        Calculates a weight that smoothly increases from start_weight to end_weight
+        during training using a sigmoid curve for smooth transition.
+        
+        Args:
+            current_epoch: Current training epoch number
+            max_epochs: Total number of training epochs
+            start_weight: Initial weight value
+            end_weight: Final weight value
+        
+        Returns:
+            float: Current weight value based on training progress
+        """
+        progress = current_epoch / max_epochs
+        # Using sigmoid function for smooth transition
+        transition = 1 / (1 + np.exp(-10 * (progress - 0.5)))
+        return start_weight + (end_weight - start_weight) * transition
+
 
     def sample_collocation_points(self, num_points, X_unscaled, data_processor):
         """Sample collocation points within the domain of the given unscaled data."""
@@ -198,13 +228,13 @@ class ShipSpeedPredictorModel:
         outputs_V = outputs_x[:, V_idx].view(-1, 1)
         outputs_V_unscaled = (outputs_V * std_P) / std_V
 
-        residual = outputs_V_unscaled - (4 * outputs_unscaled) / V_unscaled_safe
+        residual = outputs_V_unscaled - (3 * outputs_unscaled) / V_unscaled_safe
         scaling_factor = torch.tensor(1e5, dtype=torch.float32, device=self.device)
         residual_normalized = residual / scaling_factor
 
         return residual_normalized
 
-    def compute_boundary_loss(self, feature_indices, data_processor, X_unscaled, scale=1e8):
+    def compute_boundary_loss(self, feature_indices, data_processor, X_unscaled, scale=1e7):
         V_idx = feature_indices['Speed-Through-Water']
         x_min = X_unscaled.min()
         x_max = X_unscaled.max()
@@ -215,117 +245,199 @@ class ShipSpeedPredictorModel:
         std_P = torch.tensor(data_processor.scaler_y.scale_, dtype=torch.float32, device=self.device)
 
         # ============================================
-        # Condition 1: P ~ 0 for speeds in [0, 1) knot
+        # Condition 1: Power must be non-negative
         # ============================================
         V_col = X_unscaled.columns[V_idx]
-        x_boundary_unscaled_low_speed = pd.DataFrame(columns=X_unscaled.columns)
-        # Random speed in range [0, 1) for boundary
-        x_boundary_unscaled_low_speed[V_col] = np.random.uniform(0.0, 1.0, size=num_points)
+        x_boundary_unscaled = pd.DataFrame(columns=X_unscaled.columns)
+        
+        # Sample random speeds across the full range
+        x_boundary_unscaled[V_col] = np.random.uniform(
+            low=x_min[V_col], 
+            high=x_max[V_col], 
+            size=num_points
+        )
 
         # For other columns, sample random in [min, max]
         for col in X_unscaled.columns:
             if col != V_col:
-                x_boundary_unscaled_low_speed[col] = np.random.uniform(
-                    low=x_min[col], high=x_max[col], size=num_points
+                x_boundary_unscaled[col] = np.random.uniform(
+                    low=x_min[col], 
+                    high=x_max[col], 
+                    size=num_points
                 )
 
-        x_boundary_low_speed_scaled = data_processor.scaler_X.transform(x_boundary_unscaled_low_speed)
-        x_boundary_low_speed = torch.tensor(x_boundary_low_speed_scaled, dtype=torch.float32, device=self.device)
-        outputs_low_speed = self.model(x_boundary_low_speed)
+        x_boundary_scaled = data_processor.scaler_X.transform(x_boundary_unscaled)
+        x_boundary = torch.tensor(x_boundary_scaled, dtype=torch.float32, device=self.device)
+        outputs = self.model(x_boundary)
 
-        # We want outputs_low_speed ~ 0, so penalize squared power
-        boundary_loss_low_speed = torch.mean(outputs_low_speed**2) / scale
+        # Convert outputs to unscaled power values (kW)
+        outputs_unscaled = outputs * std_P + mean_P
 
-        # ===============================================
-        # Condition 2: P ≥ 8000 kW when V >= 13 knots
-        # ===============================================
-        V_ineq_knots = 10.0
-        P_min = 8000.0  # kW
+        # Penalize negative power values
+        negative_power_violation = torch.relu(-outputs_unscaled)
+        boundary_loss_negative = torch.mean(negative_power_violation**2) / scale
 
-        x_boundary_unscaled_ineq = pd.DataFrame(columns=X_unscaled.columns)
-        x_boundary_unscaled_ineq[V_col] = np.full(num_points, V_ineq_knots)
-        for col in X_unscaled.columns:
-            if col != V_col:
-                x_boundary_unscaled_ineq[col] = np.random.uniform(
-                    low=x_min[col], high=x_max[col], size=num_points
-                )
-
-        x_boundary_ineq_scaled = data_processor.scaler_X.transform(x_boundary_unscaled_ineq)
-        x_boundary_ineq = torch.tensor(x_boundary_ineq_scaled, dtype=torch.float32, device=self.device)
-        outputs_ineq = self.model(x_boundary_ineq)
-
-        # Convert model outputs back to original scale (kW)
-        outputs_ineq_unscaled = outputs_ineq * std_P + mean_P
-
-        # Penalize if outputs_ineq_unscaled < 11000
-        violation = torch.relu(P_min - outputs_ineq_unscaled)
-        boundary_loss_ineq = torch.mean(violation**2) / scale
+        # ============================================
+        # Condition 2: Power must not exceed NCR
+        # ============================================
+        NCR = 16794.0  # kW
+        
+        # More gradual penalty for exceeding NCR
+        ncr_violation = torch.relu(outputs_unscaled - (NCR))
+        boundary_loss_ncr = torch.mean(ncr_violation**2) / scale
 
         # Combine boundary losses
-        boundary_loss = boundary_loss_low_speed + boundary_loss_ineq
+        boundary_loss = boundary_loss_negative + boundary_loss_ncr
         return boundary_loss
 
     def calculate_physics_loss(self, V, predicted_power_scaled, trim,
-                               H_s, theta_ship, theta_wave, data_processor):
-        """Calculate the physics-based loss combining frictional, residuary, and wave-induced resistances."""
-        C_wave = self.model.C_wave  # Wave Resistance Coefficient
-        eta_D = self.model.eta_D    # Propulsion System Efficiency
-        C_resid = self.model.C_resid # Residuary Resistance
+                            H_s, theta_ship, theta_wave, data_processor):
 
-        V = torch.clamp(V, min=1e-5)
-        H_s = torch.clamp(H_s, min=0.0)
-        trim = torch.clamp(trim, min=-5.0, max=5.0)
+        # Constrain parameters to physical ranges using torch.clamp
+        C_wave_constrained = torch.clamp(self.model.C_wave, 
+                                        self.model.C_wave_min, 
+                                        self.model.C_wave_max)
+        eta_D_constrained = torch.clamp(self.model.eta_D, 
+                                    self.model.eta_D_min, 
+                                    self.model.eta_D_max)
+        C_resid_constrained = torch.clamp(self.model.C_resid, 
+                                        self.model.C_resid_min, 
+                                        self.model.C_resid_max)
 
-        # Reynolds Number
-        Re = V * self.L / self.nu
+
+        # Add parameter constraint loss
+        parameter_loss = (
+            torch.relu(-self.model.C_wave + self.model.C_wave_min) + 
+            torch.relu(self.model.C_wave - self.model.C_wave_max) +
+            torch.relu(-self.model.eta_D + self.model.eta_D_min) + 
+            torch.relu(self.model.eta_D - self.model.eta_D_max) +
+            torch.relu(-self.model.C_resid + self.model.C_resid_min) + 
+            torch.relu(self.model.C_resid - self.model.C_resid_max)
+        )
+            
+        # Convert physical constants to tensors matching input type and device
+        g_tensor = torch.tensor(self.g, dtype=V.dtype, device=V.device)
+        L_tensor = torch.tensor(self.L, dtype=V.dtype, device=V.device)
+        rho_tensor = torch.tensor(self.rho, dtype=V.dtype, device=V.device)
+        nu_tensor = torch.tensor(self.nu, dtype=V.dtype, device=V.device)
+        S_tensor = torch.tensor(self.S, dtype=V.dtype, device=V.device)
+        B_tensor = torch.tensor(self.B, dtype=V.dtype, device=V.device)
+        k_tensor = torch.tensor(self.k, dtype=V.dtype, device=V.device)
+        
+        # Speed-dependent calculations
+        V_ref = torch.tensor(5.144, dtype=V.dtype, device=V.device)    # 10 knots reference
+        V_design = torch.tensor(6.17, dtype=V.dtype, device=V.device)  # 12 knots design speed
+        
+        # Enhance basic resistance modeling
+        Re = V * L_tensor / nu_tensor
         Re = torch.clamp(Re, min=1e-5)
-
-        # Frictional Resistance Coefficient
+        Fn = V / torch.sqrt(g_tensor * L_tensor)
+        
+        # Modified form factor - less aggressive at low speeds
+        speed_ratio = V / V_design
+        k_speed = k_tensor * (1 + 0.15 * torch.relu(speed_ratio - 0.8)**2)
+        
+        # Enhanced frictional resistance
         C_f = 0.075 / (torch.log10(Re) - 2) ** 2
-
-        # Frictional Resistance
-        R_f = (1 + self.k) * 0.5 * self.rho * V**2 * self.S * C_f
-
-        # Residuary Resistance
-        #C_resid = 0.03  # Assumed constant
-        R_resid = C_resid * R_f
-
-        # Wave-Induced Resistance
-        A = H_s / 2  # Wave amplitude
-        S_wave = self.L * self.B  # Wetted surface area affected by waves
-
-        # Relative Wave Angle
+        R_f = 0.5 * rho_tensor * V**2 * S_tensor * C_f
+        
+        # Modified wave resistance with reduced angle dependency
+        Fn_crit = torch.tensor(0.15, dtype=V.dtype, device=V.device)
+        wave_speed_factor = torch.exp(2.0 * torch.relu(Fn - Fn_crit))
+        
+        # Reduce the impact of wave angle
         theta_rel_wave = torch.abs(theta_wave - theta_ship) % 360
         theta_rel_wave = torch.where(theta_rel_wave > 180, 360 - theta_rel_wave, theta_rel_wave)
         theta_rel_wave_rad = theta_rel_wave * torch.pi / 180
-
-        R_wave = 0.5 * self.rho * self.g * A * S_wave * C_wave * torch.cos(theta_rel_wave_rad)**2
-
-        # Total Resistance
-        R_total = R_f + R_resid + R_wave
-
-        # Required Propulsion Power
-        P_total = (V * R_total) / eta_D  # Power in Watts
-        P_total = P_total / 1000
-
-        # Scaling
+        
+        # Modified wave resistance calculation with reduced angle dependency
+        angle_factor = 1.0 + 0.2 * torch.cos(theta_rel_wave_rad)  # Much smaller angle effect
+        R_wave = 0.5 * rho_tensor * g_tensor * H_s * S_tensor * C_wave_constrained * wave_speed_factor * angle_factor
+        
+        # Speed-dependent residuary resistance
+        C_resid_speed = C_resid_constrained * (1 + 0.25 * torch.relu(speed_ratio - 0.9)**2)
+        R_resid = C_resid_speed * R_f
+        
+        # Air and appendage resistance
+        R_air = 0.5 * torch.tensor(1.225, dtype=V.dtype, device=V.device) * \
+                torch.tensor(0.8, dtype=V.dtype, device=V.device) * (B_tensor * 15.0) * V**2
+        R_app = torch.tensor(0.04, dtype=V.dtype, device=V.device) * R_f
+        
+        # Enhance propulsive efficiency modeling
+        eta_base = torch.clamp(eta_D_constrained, min=0.5, max=0.85)
+        speed_penalty = torch.relu(speed_ratio - 0.9)**2
+        eta_D_speed = eta_base * (1 - 0.15 * speed_penalty)
+        eta_D_speed = torch.clamp(eta_D_speed, min=0.5, max=0.85)
+        
+        # Total resistance with speed-dependent scaling
+        R_total = (R_f * (1 + k_speed) + R_resid + R_wave + R_air + R_app)
+        
+        # Add high-speed compensation factor
+        high_speed_factor = 1.0 + 0.3 * torch.relu(speed_ratio - 1.0)**2
+        R_total = (R_f * (1 + k_speed) + R_resid + R_wave + R_air + R_app)
+        high_speed_factor = 1.0 + 0.3 * torch.relu(speed_ratio - 1.0)**2
+        R_total = R_total * high_speed_factor
+        
+        P_total = (V * R_total) / eta_D_speed
+        P_total = P_total / 1000  # Convert to kilowatts
+        
+        # Scale for loss calculation
         scaler_y_mean = torch.tensor(data_processor.scaler_y.mean_, dtype=V.dtype, device=V.device)
         scaler_y_scale = torch.tensor(data_processor.scaler_y.scale_, dtype=V.dtype, device=V.device)
         P_total_scaled = (P_total - scaler_y_mean) / scaler_y_scale
-
-        # Physics Loss (MSE)
+        
+        # Combine physics loss with parameter constraint loss
         physics_loss = torch.mean((predicted_power_scaled.squeeze() - P_total_scaled) ** 2)
-        return physics_loss, P_total_scaled
+        total_loss = physics_loss + 1000.0 * parameter_loss  # High weight for constraint violation
+        
+        return total_loss, P_total_scaled
 
-    @staticmethod
-    def compute_total_loss(data_loss, physics_loss, pde_loss, boundary_loss,
-                           data_loss_coeff=1.0, physics_loss_coeff=1.0,
-                           pde_loss_coeff=1.0, boundary_loss_coeff=1.0):
-        """Compute the total weighted loss."""
-        return (data_loss_coeff * data_loss) + \
-               (physics_loss_coeff * physics_loss) + \
-               (pde_loss_coeff * pde_loss) + \
-               (boundary_loss_coeff * boundary_loss)
+    def compute_total_loss(self, data_loss, physics_loss, pde_loss, boundary_loss):
+        """
+        Computes the total loss with progressive weighting for physics and PDE terms.
+        The data loss and boundary loss maintain constant weights, while physics
+        and PDE loss weights increase gradually during training.
+        
+        Args:
+            data_loss: Loss based on predicted vs actual values
+            physics_loss: Loss based on physical equations
+            pde_loss: Loss based on PDE constraints
+            boundary_loss: Loss based on boundary conditions
+        
+        Returns:
+            torch.Tensor: Total weighted loss
+        """
+        # Calculate current weights based on training progress
+        physics_weight = self.get_progressive_weight(
+            self.current_epoch, 
+            self.epochs,
+            self.initial_physics_weight,
+            self.final_physics_weight
+        )
+        
+        pde_weight = self.get_progressive_weight(
+            self.current_epoch,
+            self.epochs,
+            self.initial_pde_weight,
+            self.final_pde_weight
+        )
+        
+        # Combine all losses with their respective weights
+        total_loss = (data_loss + 
+                    physics_weight * physics_loss +
+                    pde_weight * pde_loss +
+                    self.boundary_weight * boundary_loss)
+        
+        # Print detailed loss information during training if in debug mode
+        if self.debug_mode and self.current_epoch % 10 == 0:
+            print(f"\nEpoch {self.current_epoch} loss components:")
+            print(f"Data loss: {data_loss.item():.4f}")
+            print(f"Physics loss (w={physics_weight:.2f}): {physics_loss.item():.4f}")
+            print(f"PDE loss (w={pde_weight:.2f}): {pde_loss.item():.4f}")
+            print(f"Boundary loss (w={self.boundary_weight:.2f}): {boundary_loss.item():.4f}")
+            print(f"Total loss: {total_loss.item():.4f}")
+        
+        return total_loss
 
     def train(self, 
             train_loader, 
@@ -363,6 +475,8 @@ class ShipSpeedPredictorModel:
         theta_wave_idx = feature_indices.get('Mean_Wave_Direction')
 
         for epoch in range(self.epochs):
+            self.current_epoch = epoch  # Add this line to track current epoch
+            self.model.train()
             self.model.train()
             running_loss = 0.0
             running_data_loss = 0.0
@@ -697,7 +811,7 @@ class ShipSpeedPredictorModel:
 
 if __name__ == "__main__":
     data_processor = DataProcessor(
-        file_path='data/Aframax/P data_20200213-20200726_Democritos_test.csv',
+        file_path='data/Aframax/P data_20200213-20200726_Democritos.csv',
         target_column='Power',
         keep_columns_file='columns_to_keep.txt'
     )
@@ -728,7 +842,7 @@ if __name__ == "__main__":
         }
 
         epochs_cv = 1
-        epochs_final = 1000
+        epochs_final = 900
         optimizer = 'Adam'
         loss_function = 'MSE'
 

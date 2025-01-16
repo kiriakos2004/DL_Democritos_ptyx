@@ -28,9 +28,9 @@ def compute_physics_power(
     nu = 1e-6          # m^2/s (kinematic viscosity)
     g = 9.81           # m/s^2
     S = 9950.0         # m^2 (wetted surface)
-    L = 229.0          # m (length)
-    B = 32.0           # m (beam)
-    k = 0.9            # empirical correction
+    L = 264.0          # m (length)
+    B = 50.0           # m (beam)
+    k = 1.5            # empirical correction
 
     # 3) Trim
     trim = draft_fore - draft_aft
@@ -71,7 +71,7 @@ def compute_physics_power(
     return R_f, R_resid_value, R_wave, P_total_kW
 
 def main():
-    input_csv = "data/Dan/P data_20210428-20211111_Democritos.csv"
+    input_csv = "data/Aframax/P data_20200213-20200726_Democritos_test.csv"
     output_csv = "physics_equations_comparison.csv"
 
     df = pd.read_csv(input_csv)
@@ -104,7 +104,7 @@ def main():
     theta_wave = df["Mean_Wave_Direction"].values
 
     # Change these values as needed to tune power predictions:
-    C_wave = 0.002
+    C_wave = 0.0005
     eta_D = 0.85
     C_resid = 0.07
 

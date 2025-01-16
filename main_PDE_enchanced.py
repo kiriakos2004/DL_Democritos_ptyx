@@ -302,8 +302,8 @@ class ShipSpeedPredictorModel:
         boundary_loss_low_speed = torch.mean(outputs_low_speed**2) / scale
 
         # Condition 2: P >= 9000 kW at speed = 13 knots
-        V_ineq_knots = 13.0
-        P_min = 9000.0
+        V_ineq_knots = 10.0
+        P_min = 6000.0
         x_boundary_unscaled_ineq = pd.DataFrame(columns=X_unscaled.columns)
         x_boundary_unscaled_ineq[V_col] = np.full(num_points, V_ineq_knots)
 
@@ -407,7 +407,7 @@ class ShipSpeedPredictorModel:
                     pde_loss=pde_loss,
                     boundary_loss=boundary_loss,
                     data_loss_coeff=1.0, 
-                    pde_loss_coeff=0.5,
+                    pde_loss_coeff=1.0,
                     boundary_loss_coeff=1.0
                 )
 
@@ -646,7 +646,7 @@ class ShipSpeedPredictorModel:
 if __name__ == "__main__":
     # Example usage:
     data_processor = DataProcessor(
-        file_path='data/Dan/P data_20210428-20211111_Democritos.csv',
+        file_path='data/Aframax/P data_20200213-20200726_Democritos_test.csv',
         target_column='Power',
         keep_columns_file='columns_to_keep.txt'
     )
@@ -669,7 +669,7 @@ if __name__ == "__main__":
             'batch_size': [1024]
         }
         epochs_cv = 1
-        epochs_final = 1000
+        epochs_final = 1500
         optimizer = 'Adam'
         loss_function = 'MSE'
 
@@ -692,7 +692,7 @@ if __name__ == "__main__":
             loss_function_choice=loss_function,
             batch_size=best_params['batch_size'],
             debug_mode=False,
-            early_stopping=True,
+            early_stopping=False,
             patience=40,
             min_delta=0.00001
         )

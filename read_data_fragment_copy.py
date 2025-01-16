@@ -1,5 +1,4 @@
 import pandas as pd
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from math import ceil
 
@@ -8,38 +7,19 @@ class DataProcessor:
         self, 
         file_path, 
         target_column, 
-        keep_columns_file, 
-        test_size=0.1, 
-        random_state=42,
+        keep_columns_file,
         fill_missing_with_median=True, 
-        exclude_missing_Hs=True, 
-        train_fraction=1.0, 
-        test_segment=5
+        exclude_missing_Hs=True
     ):
-        """
-        file_path: Path to the CSV dataset.
-        target_column: Name of the column to predict (e.g., 'Power').
-        keep_columns_file: Path to a text file listing columns to keep.
-        test_size: Fraction/percentage for splitting data (but here you use a segment approach, so may not apply).
-        random_state: Random seed for reproducibility.
-        fill_missing_with_median: If True, fill numeric NaNs with median, else mean.
-        exclude_missing_Hs: If True, drop rows missing 'Significant_Wave_Height'.
-        train_fraction: Fraction of the training data to keep (if < 1, it further splits training).
-        test_segment: Which segment (0–9) to pick for testing if you’re doing a 10-segment approach.
-        """
         self.file_path = file_path
         self.target_column = target_column
         self.keep_columns_file = keep_columns_file
-        self.test_size = test_size
-        self.random_state = random_state
         self.fill_missing_with_median = fill_missing_with_median
         self.exclude_missing_Hs = exclude_missing_Hs
-        self.train_fraction = train_fraction
-        self.test_segment = test_segment
-        
+
         self.scaler_X = StandardScaler()
         self.scaler_y = StandardScaler()
-        
+
         self.df = None  # Will store the filtered DataFrame
 
     def load_and_prepare_data(self):
@@ -97,21 +77,9 @@ class DataProcessor:
                 print(f"Dropped {rows_dropped} rows due to missing 'Significant_Wave_Height'")
             else:
                 print("Warning: 'Significant_Wave_Height' column not found in the dataset.")
-        '''
+
         # -----------------------------------
-        # 4) Remove contradictory rows:
-        #    e.g., if 'Power' == 0 but 'Speed-Through-Water' > 6.0
-        # -----------------------------------
-        if 'Speed-Through-Water' in self.df.columns:
-            initial_count = len(self.df)
-            self.df = self.df[~((self.df[self.target_column] == 0) & (self.df['Speed-Through-Water'] > 6.0))]
-            removed_rows = initial_count - len(self.df)
-            print(f"Removed {removed_rows} rows where Speed>6 knot but Power=0.")
-        else:
-            print("Warning: 'Speed-Through-Water' column not found in the dataset. No contradictory rows removed.")
-        '''
-        # -----------------------------------
-        # 5) Fill missing numeric values
+        # 4) Fill missing numeric values
         # -----------------------------------
         numeric_cols = self.df.select_dtypes(include=['float64', 'int64']).columns
         if self.fill_missing_with_median:
@@ -120,46 +88,37 @@ class DataProcessor:
             self.df[numeric_cols] = self.df[numeric_cols].fillna(self.df[numeric_cols].mean())
 
         # -----------------------------------
-        # 6) Segment-based train/test split
+        # 5) Manual train/test split by row index
+        #    Rows 0–9,999  -> training
+        #    Rows 10,100–10,999 -> testing
         # -----------------------------------
         total_rows = len(self.df)
-        segment_size = ceil(total_rows / 10)
+        if total_rows < 11000:
+            print(f"Warning: Your dataset has only {total_rows} rows. "
+                  f"Cannot reliably split at [0:10000] and [10100:11000].")
+            return None
 
-        start_idx = self.test_segment * segment_size
-        end_idx = min(start_idx + segment_size, total_rows)
-
-        test_indices = range(start_idx, end_idx)
-        train_indices = [i for i in range(total_rows) if i not in test_indices]
+        train_indices = range(0, 10000)
+        test_indices = range(10010, 11000)
 
         X = self.df.drop(self.target_column, axis=1)
-        y = self.df[[self.target_column]]  # DataFrame for scaling
+        y = self.df[[self.target_column]]  # keep y as DataFrame for scaling
 
+        # Unscaled splits
         X_train_unscaled = X.iloc[train_indices]
         X_test_unscaled = X.iloc[test_indices]
         y_train_unscaled = y.iloc[train_indices]
         y_test_unscaled = y.iloc[test_indices]
 
         # -----------------------------------
-        # 7) If train_fraction < 1, further split training
-        # -----------------------------------
-        if self.train_fraction < 1.0:
-            X_train_unscaled, X_unused_unscaled, y_train_unscaled, y_unused_unscaled = train_test_split(
-                X_train_unscaled, 
-                y_train_unscaled, 
-                test_size=(1 - self.train_fraction), 
-                random_state=self.random_state, 
-                shuffle=False
-            )
-
-        # -----------------------------------
-        # 8) Scale X with training data
+        # 6) Scale X using training data
         # -----------------------------------
         self.scaler_X.fit(X_train_unscaled)
         X_train_scaled = self.scaler_X.transform(X_train_unscaled)
         X_test_scaled = self.scaler_X.transform(X_test_unscaled)
 
         # -----------------------------------
-        # 9) Scale y with training data
+        # 7) Scale y using training data
         # -----------------------------------
         self.scaler_y.fit(y_train_unscaled)
         y_train_scaled = self.scaler_y.transform(y_train_unscaled)
@@ -168,7 +127,6 @@ class DataProcessor:
         # Convert to DataFrame/Series for consistency
         X_train = pd.DataFrame(X_train_scaled, columns=X.columns)
         X_test = pd.DataFrame(X_test_scaled, columns=X.columns)
-
         y_train = pd.Series(y_train_scaled.flatten(), name=self.target_column)
         y_test = pd.Series(y_test_scaled.flatten(), name=self.target_column)
 
@@ -184,13 +142,13 @@ class DataProcessor:
         )
 
     def print_dataset_shapes(self, X_train, X_test):
+        """
+        Prints the shapes of the training and test feature sets.
+        """
         print(f"Training features shape: {X_train.shape}")
         print(f"Test features shape: {X_test.shape}")
 
     def list_column_names(self):
-        """
-        Prints and returns the columns in self.df (or loads them if not set).
-        """
         if self.df is None:
             try:
                 self.df = pd.read_csv(self.file_path)
@@ -213,6 +171,9 @@ class DataProcessor:
         return columns
 
     def inverse_transform_y(self, y_scaled):
+        """
+        Inverse-transforms scaled target data back to the original scale.
+        """
         return self.scaler_y.inverse_transform(y_scaled.reshape(-1, 1)).flatten()
 
 
@@ -226,9 +187,7 @@ if __name__ == "__main__":
         target_column=target_column,
         keep_columns_file=keep_columns_file,
         fill_missing_with_median=True,
-        exclude_missing_Hs=True,
-        train_fraction=1.0,
-        test_segment=9
+        exclude_missing_Hs=True
     )
 
     result = data_processor.load_and_prepare_data()
@@ -247,10 +206,5 @@ if __name__ == "__main__":
         data_processor.print_dataset_shapes(X_train, X_test)
         data_processor.list_column_names()
 
-        #print("\nSample of X_train_unscaled head:")
-        #print(X_train_unscaled.head())
-
-        #print("\nSample of y_train_unscaled head:")
-        #print(y_train_unscaled.head())
     else:
         print("Error in loading and preparing data.")
