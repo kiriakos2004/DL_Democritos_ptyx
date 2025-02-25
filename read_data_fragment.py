@@ -14,19 +14,8 @@ class DataProcessor:
         fill_missing_with_median=True, 
         exclude_missing_Hs=True, 
         train_fraction=1.0, 
-        test_segment=5
+        test_segment=9
     ):
-        """
-        file_path: Path to the CSV dataset.
-        target_column: Name of the column to predict (e.g., 'Power').
-        keep_columns_file: Path to a text file listing columns to keep.
-        test_size: Fraction/percentage for splitting data (but here you use a segment approach, so may not apply).
-        random_state: Random seed for reproducibility.
-        fill_missing_with_median: If True, fill numeric NaNs with median, else mean.
-        exclude_missing_Hs: If True, drop rows missing 'Significant_Wave_Height'.
-        train_fraction: Fraction of the training data to keep (if < 1, it further splits training).
-        test_segment: Which segment (0–9) to pick for testing if you’re doing a 10-segment approach.
-        """
         self.file_path = file_path
         self.target_column = target_column
         self.keep_columns_file = keep_columns_file

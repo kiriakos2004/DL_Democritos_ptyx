@@ -65,12 +65,14 @@ class ShipSpeedPredictorModel:
     class ShipSpeedPredictor(nn.Module):
         def __init__(self, input_size, dropout_rate=0.2):
             super().__init__()
-            self.fc1 = nn.Linear(input_size, 256)
-            self.fc2 = nn.Linear(256, 128)
-            self.fc3 = nn.Linear(128, 64)
-            self.fc4 = nn.Linear(64, 32)
-            self.fc5 = nn.Linear(32, 16)
-            self.fc6 = nn.Linear(16, 1)
+            self.fc1 = nn.Linear(input_size, 1024)
+            self.fc2 = nn.Linear(1024, 512)
+            self.fc3 = nn.Linear(512, 256)
+            self.fc4 = nn.Linear(256, 128)
+            self.fc5 = nn.Linear(128, 64)
+            self.fc6 = nn.Linear(64, 32)
+            self.fc7 = nn.Linear(32, 16)
+            self.fc8 = nn.Linear(16, 1)
 
             # Add Dropout layers
             self.dropout = nn.Dropout(p=dropout_rate)
@@ -97,8 +99,12 @@ class ShipSpeedPredictorModel:
             x = self.dropout(x)
             x = torch.relu(self.fc4(x))
             x = self.dropout(x)
-            x = torch.relu(self.fc5(x))        
-            x = self.fc6(x)
+            x = torch.relu(self.fc5(x))
+            x = self.dropout(x)
+            x = torch.relu(self.fc6(x))
+            x = self.dropout(x)
+            x = torch.relu(self.fc7(x))            
+            x = self.fc8(x)
             return x
 
     def get_device(self):
@@ -842,7 +848,7 @@ if __name__ == "__main__":
         }
 
         epochs_cv = 1
-        epochs_final = 900
+        epochs_final = 1200
         optimizer = 'Adam'
         loss_function = 'MSE'
 
@@ -880,7 +886,7 @@ if __name__ == "__main__":
             X_val_unscaled=X_val_unscaled_final,
             live_plot=True,
             enable_early_stopping=False,
-            patience=40  
+            patience=70  
         )
 
         with open('best_hyperparameters.json', 'w') as f:
