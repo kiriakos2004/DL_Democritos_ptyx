@@ -7,7 +7,7 @@ This project belongs to master's thesis of the Inter-Institutional MSc entitled 
 ## Repository Structure
 
 - read_data_fragment.py: Reads and preprocesses the data, handling missing values, scaling features, and splitting the dataset into training and testing sets. Also it implements a further split of the training dataset in order to reduce it for testing purposes.
-- main_COMBINED.py: Implements a Physics-Informed Neural Network that incorporates PDEs related to ship resistance and respective analytical equations related to ship resistance into the training process. Includes hyperparameter tuning and model evaluation. this code 4 coefficients are introduced, each of them corresponds to a different loss term that is summed to form the total loss that is used at the training proceess of the NN.
+- main_COMBINED_enchanced.py: Implements a Physics-Informed Neural Network that incorporates PDEs related to ship resistance and respective analytical equations related to ship resistance into the training process. Includes hyperparameter tuning and model evaluation. this code 4 coefficients are introduced, each of them corresponds to a different loss term that is summed to form the total loss that is used at the training proceess of the NN.
         - data_loss_coeff: defines the importance of the data loss (if set to 1 and all others to 0, corresponds to a purely data driven model set as baseline)
         - physics_loss_coeff: defines the importance of the physics loss
         - pde_loss_coeff: defines the importance of the partial differential equation loss
@@ -79,7 +79,7 @@ In order to check if the equations used at the physical part of loss accurately 
 
 To train and evaluate the PINN:
 
-        python main_COMBINED.py
+        python main_COMBINED_enchanced.py
 
 This script:
 
