@@ -63,17 +63,7 @@ This will:
 - Scale the features using StandardScaler.
 - Split the data into training and testing sets.
 - Introduce a train_fraction term that takes values from o to 1 and is used to keep a fragment of the initial train dataset.
-  
-### Check functions used for Physical Loss of PGNN
 
-In order to check if the equations used at the physical part of loss accurately predict power:
-        
-        physics_model.py
-        
- This script will:
-
-- Use unscaled data from data loader to Calculate the power needed.
-- Create a csv file logging the calculated power and the power specified on the data in order to compare the allingment.
 
 ### Running the Physics-Informed Neural Network (PINN)
 
